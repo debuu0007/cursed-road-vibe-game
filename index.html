@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#070707" />
+    <title>Cursed Road</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <canvas id="hud"></canvas>
+      <div id="flash"></div>
+      <section id="menu" class="panel is-visible" aria-label="Car and mode picker">
+        <div class="brand">
+          <p>CURSED ROAD</p>
+          <h1>The road is not built for you.</h1>
+          <p class="menu-hint">
+            Pick a car, tap <strong>a curse</strong> to start (or <strong>Start Run</strong>).
+            <kbd>W</kbd>/<kbd>S</kbd> gas/brake · <kbd>A</kbd>/<kbd>D</kbd> steer · arrows work too · <kbd>Enter</kbd> starts from menu.
+          </p>
+        </div>
+        <div class="picker-grid">
+          <div>
+            <h2>Pick a car</h2>
+            <div id="cars" class="cards"></div>
+          </div>
+          <div>
+            <h2>Pick a curse</h2>
+            <div id="modes" class="mode-list"></div>
+          </div>
+        </div>
+        <button type="button" id="start" class="primary">Start Run</button>
+        <button type="button" id="tilt-perm" class="tilt-help">
+          Enable tilt steering / iOS gyro
+        </button>
+      </section>
+      <section id="results" class="panel" aria-label="Run results">
+        <pre id="result-card"></pre>
+        <div class="actions">
+          <button id="again" class="primary">Try Again</button>
+          <button id="share">Share</button>
+        </div>
+      </section>
+      <div id="toast" role="status"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
