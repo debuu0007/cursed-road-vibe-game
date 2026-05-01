@@ -5,6 +5,7 @@ import { addRamp } from './ramp.js';
 import { addOil } from './oilPatch.js';
 import { addGap } from './gap.js';
 import { addBridge } from './bridge.js';
+import { addRepairPad } from './repairPad.js';
 
 /**
  * @param {import('./helpers.js').ObstacleCtx} ctx
@@ -21,12 +22,14 @@ export function spawnObstaclesForMode(ctx, modeKey, seed) {
     });
     for (let z = 80; z < 650; z += 70) addBump(ctx, z + 22, random() * 4 - 2);
     addBridge(ctx, 298);
+    addRepairPad(ctx, 1.8, 540);
   }
 
   if (modeKey === 'shock') {
     for (let z = 80; z < 1500; z += 32) {
       if (random() < 0.72) addDivider(ctx, random() > 0.5 ? -3.05 : 3.05, z);
       if (random() < 0.35) addOil(ctx, random() * 3.8 - 1.9, z + 14);
+      if (z > 250 && z % 224 === 16) addRepairPad(ctx, random() * 4.4 - 2.2, z + 8);
     }
   }
 
@@ -44,6 +47,7 @@ export function spawnObstaclesForMode(ctx, modeKey, seed) {
       else if (kind === 'ramp') addRamp(ctx, z, x);
       else if (kind === 'divider') addDivider(ctx, x, z);
       else addBump(ctx, z, x);
+      if (z > 160 && z % 204 === 26) addRepairPad(ctx, random() * 4 - 2, z + 12);
     }
     const gapZs = modeKey === 'daily' ? [220, 480, 720] : [190, 430, 620];
     const gapSz = modeKey === 'daily' ? 3.2 : 2.8;
