@@ -85,6 +85,11 @@ export function drawHUD(canvasW, canvasH, opts) {
   ctx.fillStyle = '#f2f2ed';
   ctx.textAlign = 'right';
   ctx.fillText(`${Math.round(state.damage)}%`, bx + barW, 30);
+  if (state.repairs > 0) {
+    ctx.fillStyle = '#8fd4a8';
+    ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(`REPAIRS ${state.repairs}`, bx + barW, 68);
+  }
 
   if (phase === 'running') {
     ctx.textAlign = 'center';

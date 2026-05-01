@@ -79,6 +79,7 @@ const state = {
   flashText: '',
   flashTTL: 0,
   tiltEnabled: false,
+  repairs: 0,
   /** Incoming player tag from portal (optional). */
   portalUsername: ''
 };
@@ -100,6 +101,7 @@ let car;
 let carGltfSpawnToken = 0;
 let fixedStepAccumulator = 0;
 let lastTime = performance.now();
+const cameraLookTarget = new THREE.Vector3();
 const roadSegments = [];
 const obstacles = [];
 const trees = [];
@@ -223,6 +225,7 @@ function resetRun() {
   state.nextShockAt = state.selectedMode === 'shock' ? 2.5 : 8 + Math.random() * 6;
   state.flashText = '';
   state.flashTTL = 0;
+  state.repairs = 0;
   flash.textContent = '';
   flash.classList.remove('is-visible');
   finishState.won = false;
@@ -504,6 +507,17 @@ function checkObstacleTriggers(dt) {
       }
     }
 
+    if (obstacle.kind === 'repair' && !obstacle.used && dx < obstacle.radius && dz < 3.2) {
+      obstacle.used = true;
+      obstacle.mesh.visible = false;
+      const before = state.damage;
+      state.damage = Math.max(0, state.damage - 16);
+      state.repairs += 1;
+      if (before > state.damage) flashMessage('FIELD REPAIR');
+      else flashMessage('REPAIR BANKED');
+      playSfx('win');
+    }
+
     if (obstacle.kind === 'gap' && dx < 3.85 && dz < obstacle.radius) {
       car.body.velocity.y -= (1.2 - car.config.clearance) * dt * 22;
       if (!obstacle.used && car.config.clearance < 0.45) {
@@ -657,12 +671,14 @@ function updateCamera(dt) {
     4.2 + speedNorm * 0.8,
     car.body.position.z - chase - shockExtra
   );
-  const shake = state.shake;
+  const shake = Math.min(state.shake, car.shockTTL > 0 ? 1.2 : 0.75);
   if (shake > 0.01) {
-    target.x += (Math.random() - 0.5) * shake * 0.8;
-    target.y += (Math.random() - 0.5) * shake * 0.3;
+    const t = state.time;
+    target.x += (Math.sin(t * 31) * 0.45 + Math.sin(t * 13) * 0.25) * shake;
+    target.y += (Math.cos(t * 23) * 0.16 + Math.sin(t * 17) * 0.08) * shake;
   }
-  camera.position.lerp(target, 1 - Math.pow(0.001, dt));
+  const follow = car.shockTTL > 0 ? 1 - Math.pow(0.015, dt) : 1 - Math.pow(0.001, dt);
+  camera.position.lerp(target, follow);
   
   const lookAhead = 8 + speedNorm * 6;
   const look = new THREE.Vector3(
@@ -670,7 +686,8 @@ function updateCamera(dt) {
     1.4 - speedNorm * 0.35,
     car.body.position.z + lookAhead
   );
-  camera.lookAt(look);
+  cameraLookTarget.lerp(look, 1 - Math.pow(0.002, dt));
+  camera.lookAt(cameraLookTarget);
   
   let targetFov = 58 + speedNorm * 24;
   if (car.shockTTL > 0) targetFov += 12;
@@ -698,7 +715,8 @@ function endRun(won, reason = won ? 'Road survived' : 'Run over') {
       result,
       bestAllTime,
       selectedMode: state.selectedMode,
-      dailyBest
+      dailyBest,
+      repairs: state.repairs
     });
   }
   refreshPicker();

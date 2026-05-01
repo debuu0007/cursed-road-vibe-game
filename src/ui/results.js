@@ -10,7 +10,8 @@ export function showResultsPanel(args) {
     result,
     bestAllTime,
     selectedMode,
-    dailyBest
+    dailyBest,
+    repairs = 0
   } = args;
   const title = won ? 'ROAD SURVIVED' : 'RUN OVER';
 
@@ -30,6 +31,8 @@ export function showResultsPanel(args) {
     const d = getDailySeedDateString();
     lines.push(`| Today's best:   ${String(dailyBest).padStart(4)}m (${d.slice(0, 15)})|`);
   }
+
+  if (repairs > 0) lines.push(`| Field repairs:  ${String(repairs).padStart(3)}             |`);
 
   lines.push(
     `| Cause: ${reason.slice(0, 23).padEnd(23)}|`,
