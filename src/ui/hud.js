@@ -102,6 +102,10 @@ export function drawHUD(canvasW, canvasH, opts) {
     ctx.fillStyle = '#8fd4a8';
     ctx.font = '800 11px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.fillText(String(state.curseLabel).slice(0, 18), bx + barW, 68);
+  } else if (state.repairs > 0) {
+    ctx.fillStyle = '#8fd4a8';
+    ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(`REPAIRS ${state.repairs}`, bx + barW, 68);
   }
 
   if (phase === 'running') {

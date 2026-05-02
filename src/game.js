@@ -86,6 +86,7 @@ const state = {
   frictionTTL: 0,
   frictionGrip: 1,
   curseLabel: '',
+  repairs: 0,
   /** Incoming player tag from portal (optional). */
   portalUsername: '',
   /** Time since last portal spawn */
@@ -263,6 +264,7 @@ function resetRun() {
   state.frictionGrip = 1;
   state.curseLabel = '';
   state.portalTimer = 0;
+  state.repairs = 0;
   flash.textContent = '';
   flash.classList.remove('is-visible');
   finishState.won = false;
@@ -844,6 +846,17 @@ function checkObstacleTriggers(dt) {
       }
     }
 
+    if (obstacle.kind === 'repair' && !obstacle.used && dx < obstacle.radius && dz < 3.2) {
+      obstacle.used = true;
+      obstacle.mesh.visible = false;
+      const before = state.damage;
+      state.damage = Math.max(0, state.damage - 16);
+      state.repairs += 1;
+      if (before > state.damage) flashMessage('FIELD REPAIR');
+      else flashMessage('REPAIR BANKED');
+      playSfx('win');
+    }
+
     if (obstacle.kind === 'gap' && dx < 3.85 && dz < obstacle.radius) {
       car.body.velocity.y -= (1.2 - car.config.clearance) * dt * 22;
       if (!obstacle.used && car.config.clearance < 0.45) {
@@ -1056,12 +1069,14 @@ function updateCamera(dt) {
     target.y += (Math.cos(t * 23) * 0.16 + Math.sin(t * 17) * 0.08) * shake;
   }
 
+  const follow = car.shockTTL > 0 ? 1 - Math.pow(0.015, dt) : 1 - Math.pow(0.001, dt);
   const lookAhead = 8 + speedNorm * 6;
   const look = new THREE.Vector3(
     renderPos.x * (0.32 + speedNorm * 0.18),
     1.4 - speedNorm * 0.35,
     renderPos.z + lookAhead
   );
+<<<<<<< HEAD
 
   if (idleSnapCamera) {
     camera.position.copy(target);
@@ -1099,7 +1114,8 @@ function endRun(won, reason = won ? 'Road survived' : 'Run over') {
       result,
       bestAllTime,
       selectedMode: state.selectedMode,
-      dailyBest
+      dailyBest,
+      repairs: state.repairs
     });
   }
   refreshPicker();
