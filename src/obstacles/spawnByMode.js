@@ -69,13 +69,10 @@ export function spawnObstaclesForMode(ctx, modeKey, seed) {
       else if (kind === 'ramp') addRamp(ctx, z, x);
       else if (kind === 'divider') addDivider(ctx, x, z);
       else addBump(ctx, z, x);
-<<<<<<< HEAD
       if (z % 328 === 172) addFogPatch(ctx, z + 42, 16);
       if (z % 410 === 254) addFrictionZone(ctx, laneX(random, 4.5), z + 34, random() > 0.5 ? 'ice' : 'gravel');
       if (z % 492 === 336) addGravityWell(ctx, laneX(random, 4), z + 45);
-=======
-      if (z > 160 && z % 204 === 26) addRepairPad(ctx, random() * 4 - 2, z + 12);
->>>>>>> c1af616334983cc68daf81063a2cc0e7ff0d065c
+      if (z > 160 && z % 616 === 370) addRepairPad(ctx, laneX(random, 4), z + 50);
     }
     const gapZs = modeKey === 'daily' ? [330, 760, 1190, 1520] : [300, 720, 1160, 1450];
     const gapSz = modeKey === 'daily' ? 3.2 : 2.8;

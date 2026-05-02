@@ -1076,7 +1076,6 @@ function updateCamera(dt) {
     1.4 - speedNorm * 0.35,
     renderPos.z + lookAhead
   );
-<<<<<<< HEAD
 
   if (idleSnapCamera) {
     camera.position.copy(target);
