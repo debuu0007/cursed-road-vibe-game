@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { PHYS_MAT } from './physics.js';
+import { ROAD_HALF_WIDTH } from './constants.js';
 
 /**
  * @typedef {{ group: THREE.Group, body: CANNON.Body, z: number, initialZ: number, isGap: boolean }} RoadSegment
@@ -15,21 +16,37 @@ export function spawnRoad(scene, world, roadSegments) {
   const roadMat = new THREE.MeshLambertMaterial({ color: 0x3a3d40 });
   const shoulderMat = new THREE.MeshLambertMaterial({ color: 0x2a2e30 });
   const dividerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const yellowLineMat = new THREE.MeshBasicMaterial({ color: 0xf0d84e });
+  const whiteLineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   
   for (let i = 0; i < 70; i += 1) {
     const z = i * 18;
     const group = new THREE.Group();
     group.position.z = z;
     
-    const road = new THREE.Mesh(new THREE.BoxGeometry(8, 0.16, 17.6), roadMat);
+    const road = new THREE.Mesh(new THREE.BoxGeometry(ROAD_HALF_WIDTH * 2, 0.16, 17.6), roadMat);
     road.position.y = -0.08;
     
-    const leftShoulder = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 17.6), shoulderMat);
-    leftShoulder.position.set(-5.1, -0.12, 0);
+    const leftShoulder = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.12, 17.6), shoulderMat);
+    leftShoulder.position.set(-(ROAD_HALF_WIDTH + 1.3), -0.12, 0);
     const rightShoulder = leftShoulder.clone();
-    rightShoulder.position.x = 5.1;
+    rightShoulder.position.x = ROAD_HALF_WIDTH + 1.3;
     
     group.add(road, leftShoulder, rightShoulder);
+    
+    // Road edge lines (yellow)
+    const leftEdgeLine = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 17.6), yellowLineMat);
+    leftEdgeLine.position.set(-ROAD_HALF_WIDTH, 0.01, 0);
+    const rightEdgeLine = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 17.6), yellowLineMat);
+    rightEdgeLine.position.set(ROAD_HALF_WIDTH, 0.01, 0);
+    group.add(leftEdgeLine, rightEdgeLine);
+    
+    // Center lane markings (dashed white line)
+    if (i % 2 === 0) {
+      const centerDash = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.02, 8), whiteLineMat);
+      centerDash.position.set(0, 0.01, 0);
+      group.add(centerDash);
+    }
     
     // Add dividers on both sides randomly (60% chance per segment)
     if (Math.random() > 0.4) {
@@ -42,14 +59,14 @@ export function spawnRoad(scene, world, roadSegments) {
         new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerDepth),
         dividerMat
       );
-      leftDivider.position.set(-4.0, dividerHeight / 2 - 0.08, 0);
+      leftDivider.position.set(-ROAD_HALF_WIDTH, dividerHeight / 2 - 0.08, 0);
       
       // Right divider
       const rightDivider = new THREE.Mesh(
         new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerDepth),
         dividerMat
       );
-      rightDivider.position.set(4.0, dividerHeight / 2 - 0.08, 0);
+      rightDivider.position.set(ROAD_HALF_WIDTH, dividerHeight / 2 - 0.08, 0);
       
       group.add(leftDivider, rightDivider);
     }
@@ -57,7 +74,7 @@ export function spawnRoad(scene, world, roadSegments) {
     scene.add(group);
 
     const body = new CANNON.Body({ type: CANNON.Body.STATIC, material: PHYS_MAT.road });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(4, 0.08, 8.8)));
+    body.addShape(new CANNON.Box(new CANNON.Vec3(ROAD_HALF_WIDTH, 0.08, 8.8)));
     body.position.set(0, -0.08, z);
     world.addBody(body);
     roadSegments.push({ group, body, z, initialZ: z, isGap: false });
@@ -80,13 +97,21 @@ export function resetRoadSegments(roadSegments, world) {
  * @param {CANNON.World} world
  */
 export function carveRoadGap(roadSegments, world, z, size) {
+  let minZ = Infinity;
+  let maxZ = -Infinity;
   for (const segment of roadSegments) {
     if (Math.abs(segment.group.position.z - z) < Math.max(9, size * 1.7)) {
       segment.isGap = true;
       segment.group.visible = false;
       if (segment.body.world) world.removeBody(segment.body);
+      minZ = Math.min(minZ, segment.group.position.z - 8.8);
+      maxZ = Math.max(maxZ, segment.group.position.z + 8.8);
     }
   }
+  if (!Number.isFinite(minZ) || !Number.isFinite(maxZ)) {
+    return { center: z, length: size };
+  }
+  return { center: (minZ + maxZ) / 2, length: Math.max(size, maxZ - minZ) };
 }
 
 /**

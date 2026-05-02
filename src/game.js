@@ -20,6 +20,7 @@ import { makeCarMesh, createCarBody } from './cars/carBase.js';
 import { carConfigs, isRickshawUnlocked, markRunCompletedOnce } from './cars/index.js';
 import { spawnObstaclesForMode } from './obstacles/spawnByMode.js';
 import { updateBridgeCollapse, syncBridgeMesh } from './obstacles/bridge.js';
+import { disposeObject3D } from './obstacles/dispose.js';
 import { drawHUD } from './ui/hud.js';
 import { buildPicker } from './ui/carPicker.js';
 import { showResultsPanel, formatShareText, persistScores } from './ui/results.js';
@@ -79,8 +80,16 @@ const state = {
   flashText: '',
   flashTTL: 0,
   tiltEnabled: false,
+  fogTTL: 0,
+  windTTL: 0,
+  windDirection: 0,
+  frictionTTL: 0,
+  frictionGrip: 1,
+  curseLabel: '',
   /** Incoming player tag from portal (optional). */
-  portalUsername: ''
+  portalUsername: '',
+  /** Time since last portal spawn */
+  portalTimer: 0
 };
 
 const finishState = { won: false, reason: 'Ready' };
@@ -100,6 +109,11 @@ let car;
 let carGltfSpawnToken = 0;
 let fixedStepAccumulator = 0;
 let lastTime = performance.now();
+const cameraLookTarget = new THREE.Vector3();
+const FIXED_DELTA = 1 / 60;
+const MAX_FRAME_DELTA = 0.1;
+const MAX_PHYSICS_SUBSTEPS = 6;
+const MAX_STEP_DISPLACEMENT = 2.15;
 const roadSegments = [];
 const obstacles = [];
 const trees = [];
@@ -194,6 +208,9 @@ function spawnCar() {
   const mesh = makeCarMesh(config);
   scene.add(mesh);
   car = { body, mesh, config, grounded: true, oilTTL: 0, shockTTL: 0, yaw: 0, forwardSpeed: 0 };
+  car.body.velocity.set(0, 0, 0);
+  car.body.angularVelocity.set(0, 0, 0);
+  initCarRenderState();
   const gltfToken = (carGltfSpawnToken += 1);
   const carIdForGltf = state.selectedCar;
   queueMicrotask(async () => {
@@ -209,6 +226,22 @@ function resetRun() {
   resetRoadSegments(roadSegments, world);
   resetTrees();
   spawnCar();
+  
+  // Hard reset car position and velocity to eliminate any idle animation residue
+  if (car) {
+    const rideHeight = car.config.scale[1] / 2 + 0.16;
+    car.body.position.set(0, rideHeight, 1);
+    car.body.quaternion.setFromEuler(0, 0, 0);
+    car.body.velocity.set(0, 0, 0);
+    car.body.angularVelocity.set(0, 0, 0);
+    car.yaw = 0;
+    car.forwardSpeed = 0;
+    
+    // Sync render state immediately to prevent interpolation flicker
+    initCarRenderState();
+    syncCarMesh(1);
+  }
+  
   const boost = pendingPortalForwardSpeed;
   if (boost != null && car) {
     car.forwardSpeed = THREE.MathUtils.clamp(boost * 1.03, 0, Math.max(car.config.speed * 2.9, boost));
@@ -220,13 +253,22 @@ function resetRun() {
   state.distance = 0;
   state.time = 0;
   state.shockTimer = 8;
-  state.nextShockAt = state.selectedMode === 'shock' ? 2.5 : 8 + Math.random() * 6;
+  state.nextShockAt = state.selectedMode === 'shock' ? 4.5 : 10 + Math.random() * 8;
   state.flashText = '';
   state.flashTTL = 0;
+  state.fogTTL = 0;
+  state.windTTL = 0;
+  state.windDirection = 0;
+  state.frictionTTL = 0;
+  state.frictionGrip = 1;
+  state.curseLabel = '';
+  state.portalTimer = 0;
   flash.textContent = '';
   flash.classList.remove('is-visible');
   finishState.won = false;
   finishState.reason = 'Running';
+  physicsStats.grounded = false;
+  physicsStats.activeContacts = 0;
   physicsStats.lastShoulderAt = -99;
   physicsStats.lastImpactAt = 0;
   physicsStats.lastImpactLabel = '';
@@ -238,8 +280,27 @@ function resetRun() {
   syncGameCanvasPointerBlocking();
 }
 
+function getCarSpeedKmh() {
+  if (!car) return 0;
+  const horizontalSpeed = Math.hypot(car.body.velocity.x, car.body.velocity.z);
+  const rawKmh = horizontalSpeed * 3.6;
+  if (
+    physicsStats.grounded &&
+    Math.abs(car.forwardSpeed) < 0.35 &&
+    rawKmh < 4 &&
+    car.shockTTL <= 0 &&
+    car.oilTTL <= 0 &&
+    state.windTTL <= 0
+  ) {
+    return 0;
+  }
+  return rawKmh;
+}
+
 function clearObstacles() {
   for (const obstacle of obstacles) {
+    disposeObject3D(obstacle.mesh);
+    if (obstacle.voidMesh) disposeObject3D(obstacle.voidMesh);
     scene.remove(obstacle.mesh);
     if (obstacle.voidMesh) scene.remove(obstacle.voidMesh);
     if (obstacle.body) {
@@ -341,7 +402,7 @@ async function requestTiltPermission() {
 }
 
 function loop(now) {
-  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  const dt = Math.min((now - lastTime) / 1000, MAX_FRAME_DELTA);
   lastTime = now;
   if (!renderer || !scene || !camera || !car) {
     requestAnimationFrame(loop);
@@ -362,38 +423,195 @@ function loop(now) {
     modes: modeConfigs,
     phase: state.phase
   });
-  const kmh = car ? Math.round(car.body.velocity.length() * 3.6) : 0;
+  const kmh = car ? Math.round(getCarSpeedKmh()) : 0;
   if (car) updateEngineAudio(kmh, state.phase);
   requestAnimationFrame(loop);
 }
 
 function fixedPhysics(dt) {
   fixedStepAccumulator += dt;
-  while (fixedStepAccumulator >= 1 / 60) {
-    world.step(1 / 60);
-    fixedStepAccumulator -= 1 / 60;
+  let substeps = 0;
+  while (fixedStepAccumulator >= FIXED_DELTA && substeps < MAX_PHYSICS_SUBSTEPS) {
+    runFixedPhysicsStep(FIXED_DELTA);
+    fixedStepAccumulator -= FIXED_DELTA;
+    substeps += 1;
   }
+  if (substeps === MAX_PHYSICS_SUBSTEPS && fixedStepAccumulator >= FIXED_DELTA) {
+    fixedStepAccumulator = fixedStepAccumulator % FIXED_DELTA;
+  }
+  return THREE.MathUtils.clamp(fixedStepAccumulator / FIXED_DELTA, 0, 1);
 }
 
 function updateGame(dt) {
   state.time += dt;
   runData.timeAlive = state.time;
-  applyDriving(dt);
-  fixedPhysics(dt);
-  checkImpacts();
-  stabilizeCarOnTrack(dt);
-  syncCarMesh();
-  for (const o of obstacles) {
-    if (o.kind === 'bridge') {
-      const fell = updateBridgeCollapse(o, dt, car.body);
-      if (fell) {
-        playSfx('crash');
-        state.shake = Math.max(state.shake, 0.9);
-      }
-      syncBridgeMesh(o);
+  updateCurseTimers(dt);
+  const alpha = fixedPhysics(dt);
+  syncCarMesh(alpha);
+  checkObstacleTriggers(dt);
+  updateMovingHazards(dt);
+  updateHazardVisuals(dt);
+  handlePortals();
+  updateRunState(dt);
+}
+
+function updateCurseTimers(dt) {
+  state.fogTTL = Math.max(0, state.fogTTL - dt);
+  state.windTTL = Math.max(0, state.windTTL - dt);
+  state.frictionTTL = Math.max(0, state.frictionTTL - dt);
+  if (state.frictionTTL <= 0) state.frictionGrip = 1;
+  if (state.windTTL <= 0) state.windDirection = 0;
+  if (state.fogTTL <= 0 && state.windTTL <= 0 && state.frictionTTL <= 0) state.curseLabel = '';
+}
+
+function updateMovingHazards(dt) {
+  if (!car) return;
+  for (const obstacle of obstacles) {
+    if (obstacle.kind !== 'traffic' || obstacle.used) continue;
+    const ahead = obstacle.mesh.position.z - car.body.position.z;
+    if (ahead > 180) continue;
+    obstacle.mesh.position.z -= (obstacle.speed || 42) * dt;
+    if (ahead < -45) {
+      obstacle.used = true;
+      obstacle.mesh.visible = false;
+      continue;
+    }
+    const dx = Math.abs(car.body.position.x - obstacle.mesh.position.x);
+    const dz = Math.abs(car.body.position.z - obstacle.mesh.position.z);
+    if (dz < 58 && !obstacle.warned) {
+      obstacle.warned = true;
+      state.curseLabel = obstacle.mesh.position.x < 0 ? 'ONCOMING LEFT' : 'ONCOMING RIGHT';
+      flashMessage(state.curseLabel);
+    }
+    if (dx < 1.75 && dz < 3.1) {
+      obstacle.used = true;
+      obstacle.mesh.visible = false;
+      car.forwardSpeed *= 0.18;
+      car.body.velocity.x += Math.sign(car.body.position.x - obstacle.mesh.position.x || 1) * 12;
+      state.shake = Math.max(state.shake, 1.9);
+      addDamage(obstacle.hitDamage || 42, 'HEAD-ON');
+      playSfx('crash');
     }
   }
-  checkObstacleTriggers(dt);
+}
+
+function updateHazardVisuals(dt) {
+  const t = state.time;
+  for (const obstacle of obstacles) {
+    if (!obstacle.mesh) continue;
+    if (obstacle.kind === 'gravity') {
+      obstacle.mesh.rotation.y += dt * 2.4;
+      obstacle.mesh.scale.setScalar(1 + Math.sin(t * 6 + obstacle.mesh.position.z) * 0.055);
+    } else if (obstacle.kind === 'wind') {
+      obstacle.mesh.position.x = Math.sin(t * 5 + obstacle.mesh.position.z) * 0.18;
+    } else if (obstacle.kind === 'fog') {
+      obstacle.mesh.children.forEach((child, index) => {
+        child.position.x = Math.sin(t * 0.9 + index) * 0.35;
+      });
+    } else if (obstacle.kind === 'traffic') {
+      const pulse = 0.42 + Math.sin(t * 9) * 0.18;
+      obstacle.mesh.children.forEach((child) => {
+        if (child.material?.transparent) child.material.opacity = Math.max(0.22, pulse);
+      });
+    } else if (obstacle.kind === 'slipstream') {
+      obstacle.mesh.children.forEach((child, index) => {
+        if (index > 0) child.position.z += dt * 5.5;
+        if (child.position.z > 4.4) child.position.z = -3.8;
+      });
+    }
+  }
+}
+
+/** Collapsing planks need cannon steps when still near the car. */
+function bridgesBlockingIdleLock() {
+  if (!car) return false;
+  const cz = car.body.position.z;
+  for (const o of obstacles) {
+    if (o.kind !== 'bridge' || !o.collapsed) continue;
+    if (o.body?.type !== CANNON.Body.DYNAMIC) continue;
+    const mz = o.mesh?.position?.z ?? 0;
+    if (Math.abs(mz - cz) < 140) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the car should be visually frozen — no throttle, grounded (or very close to ground),
+ * negligible motion, no active curse/drive timers. Lets us skip cannon + interpolation jitter.
+ */
+function isCarIdle() {
+  if (!car || state.phase !== 'running') return false;
+  if (bridgesBlockingIdleLock()) return false;
+
+  // Check grounded OR nearly-grounded with low vertical velocity (post-landing tolerance)
+  const rideHeight = car.config.scale[1] / 2 + 0.16;
+  const nearGround = car.body.position.y < rideHeight + 0.15;
+  if (!physicsStats.grounded && !nearGround) return false;
+
+  if (keys.has('w') || keys.has('arrowup') || keys.has('s') || keys.has('arrowdown')) return false;
+  if (keys.has('a') || keys.has('arrowleft') || keys.has('d') || keys.has('arrowright')) return false;
+
+  const tiltSteer = state.tiltEnabled ? THREE.MathUtils.clamp(deviceGamma / 24, -1, 1) : 0;
+  if (state.tiltEnabled && Math.abs(tiltSteer) > 0.06) return false;
+
+  if (Math.abs(car.forwardSpeed) >= 0.05) return false;
+  if (car.shockTTL > 0 || car.oilTTL > 0) return false;
+  if (state.windTTL > 0 || state.frictionTTL > 0 || state.fogTTL > 0) return false;
+
+  const v = car.body.velocity;
+  if (Math.hypot(v.x, v.z) >= 0.05) return false;
+  // More lenient Y velocity check for post-landing settle
+  if (Math.abs(v.y) >= 0.15) return false;
+  
+  const av = car.body.angularVelocity;
+  if (Math.abs(av.x) > 0.02 || Math.abs(av.y) > 0.02 || Math.abs(av.z) > 0.02) return false;
+
+  return true;
+}
+
+function runBridgeObstaclesStep(dt) {
+  for (const o of obstacles) {
+    if (o.kind !== 'bridge') continue;
+    const fell = updateBridgeCollapse(o, dt, car.body);
+    if (fell) {
+      playSfx('crash');
+      state.shake = Math.max(state.shake, 0.9);
+    }
+    syncBridgeMesh(o);
+  }
+}
+
+function runFixedPhysicsStep(dt) {
+  const idleFrozen = isCarIdle();
+
+  if (idleFrozen) {
+    if (!car.renderState) initCarRenderState();
+    car.forwardSpeed = 0;
+    car.body.velocity.set(0, 0, 0);
+    car.body.angularVelocity.set(0, 0, 0);
+
+    runBridgeObstaclesStep(dt);
+
+    const rs = car.renderState;
+    rs.previousPosition.copy(car.body.position);
+    rs.previousQuaternion.copy(car.body.quaternion);
+    rs.currentPosition.copy(car.body.position);
+    rs.currentQuaternion.copy(car.body.quaternion);
+    return;
+  }
+
+  capturePreviousPhysicsState();
+  applyDriving(dt);
+  clampCarVelocityForFixedStep();
+  world.step(FIXED_DELTA);
+  clampCarVelocityForFixedStep();
+  checkImpacts();
+  stabilizeCarOnTrack(dt);
+  runBridgeObstaclesStep(dt);
+  captureCurrentPhysicsState();
+}
+
+function handlePortals() {
   if (exitPortalHandle && isCarInPortal(car, exitPortalHandle)) {
     triggerExitPortalRedirect(
       car,
@@ -417,7 +635,6 @@ function updateGame(dt) {
       t.body.position.z += SCENERY_WRAP_DISTANCE;
     }
   }
-  updateRunState(dt);
 }
 
 function idlePreview(dt) {
@@ -425,10 +642,12 @@ function idlePreview(dt) {
   car.body.position.z = 1;
   car.body.position.x = Math.sin(performance.now() * 0.001) * 0.35;
   car.body.quaternion.setFromEuler(0, Math.sin(performance.now() * 0.001) * 0.15, 0);
-  syncCarMesh();
+  car.body.velocity.set(0, 0, 0);
+  car.body.angularVelocity.set(0, 0, 0);
+  captureCurrentPhysicsState();
+  syncCarMesh(1);
   camera.position.lerp(new THREE.Vector3(0, 4.8, -8.5), 0.04);
   camera.lookAt(0, 0.7, 2);
-  fixedPhysics(dt);
 }
 
 function applyDriving(dt) {
@@ -446,8 +665,9 @@ function applyDriving(dt) {
   const rawSteer = useTilt ? tiltSteer : steerKey;
   const oilInvert = car.oilTTL > 0 ? -1 : 1;
   const steer = rawSteer * oilInvert;
-  const oilFactor = car.oilTTL > 0 ? 0.32 : 1;
-  const offroadFactor = Math.abs(body.position.x) > ROAD_HALF_WIDTH + 2 ? 0.72 : 1;
+  const grip = state.frictionTTL > 0 ? state.frictionGrip : 1;
+  const oilFactor = (car.oilTTL > 0 ? 0.32 : 1) * THREE.MathUtils.clamp(grip, 0.28, 1.35);
+  const offroadFactor = Math.abs(body.position.x) > ROAD_HALF_WIDTH + 2 ? 0.45 : 1;
 
   car.forwardSpeed += config.accel * throttle * offroadFactor * dt;
   if (brake) car.forwardSpeed -= 58 * dt;
@@ -469,7 +689,10 @@ function applyDriving(dt) {
   body.angularVelocity.x *= physicsStats.grounded ? 0.32 : 0.45;
   body.angularVelocity.y *= 0.28;
   body.angularVelocity.z *= physicsStats.grounded ? 0.28 : 0.42;
-  body.velocity.x = Math.sin(car.yaw) * car.forwardSpeed + steer * oilFactor * 2.4;
+  const windPush = state.windTTL > 0
+    ? state.windDirection * (5.5 + Math.min(Math.abs(car.forwardSpeed) * 0.14, 12))
+    : 0;
+  body.velocity.x = Math.sin(car.yaw) * car.forwardSpeed + steer * oilFactor * 2.4 + windPush;
   body.velocity.z = Math.cos(car.yaw) * car.forwardSpeed;
   body.position.x = THREE.MathUtils.clamp(body.position.x, -PLAYABLE_HALF_WIDTH, PLAYABLE_HALF_WIDTH);
 
@@ -477,9 +700,79 @@ function applyDriving(dt) {
   if (car.shockTTL > 0) car.shockTTL -= dt;
 }
 
-function syncCarMesh() {
-  car.mesh.position.copy(car.body.position);
-  car.mesh.quaternion.copy(car.body.quaternion);
+function initCarRenderState() {
+  if (!car) return;
+  car.renderState = {
+    previousPosition: car.body.position.clone(),
+    currentPosition: car.body.position.clone(),
+    previousQuaternion: car.body.quaternion.clone(),
+    currentQuaternion: car.body.quaternion.clone()
+  };
+}
+
+function capturePreviousPhysicsState() {
+  if (!car?.renderState) initCarRenderState();
+  car.renderState.previousPosition.copy(car.body.position);
+  car.renderState.previousQuaternion.copy(car.body.quaternion);
+}
+
+function captureCurrentPhysicsState() {
+  if (!car?.renderState) initCarRenderState();
+  car.renderState.currentPosition.copy(car.body.position);
+  car.renderState.currentQuaternion.copy(car.body.quaternion);
+}
+
+function clampCarVelocityForFixedStep() {
+  if (!car) return;
+  const maxVelocity = MAX_STEP_DISPLACEMENT / FIXED_DELTA;
+  const vx = car.body.velocity.x;
+  const vz = car.body.velocity.z;
+  const horizontalSpeed = Math.hypot(vx, vz);
+  
+  // Dead zone: force zero velocity at idle to stop micro-twitching
+  const IDLE_THRESHOLD = 0.08;
+  if (horizontalSpeed < IDLE_THRESHOLD && Math.abs(car.forwardSpeed) < IDLE_THRESHOLD) {
+    car.body.velocity.x = 0;
+    car.body.velocity.z = 0;
+    car.body.velocity.y = Math.abs(car.body.velocity.y) < 0.05 ? 0 : car.body.velocity.y;
+    car.body.angularVelocity.set(0, 0, 0);
+    car.forwardSpeed = 0;
+    return;
+  }
+  
+  if (horizontalSpeed > maxVelocity) {
+    const scale = maxVelocity / horizontalSpeed;
+    car.body.velocity.x *= scale;
+    car.body.velocity.z *= scale;
+    car.forwardSpeed = Math.sign(car.forwardSpeed || 1) * Math.abs(car.forwardSpeed) * scale;
+  }
+}
+
+function syncCarMesh(alpha = 1) {
+  const rs = car.renderState;
+  if (rs) {
+    car.mesh.position.set(
+      THREE.MathUtils.lerp(rs.previousPosition.x, rs.currentPosition.x, alpha),
+      THREE.MathUtils.lerp(rs.previousPosition.y, rs.currentPosition.y, alpha),
+      THREE.MathUtils.lerp(rs.previousPosition.z, rs.currentPosition.z, alpha)
+    );
+    const prevQ = new THREE.Quaternion(
+      rs.previousQuaternion.x,
+      rs.previousQuaternion.y,
+      rs.previousQuaternion.z,
+      rs.previousQuaternion.w
+    );
+    const currQ = new THREE.Quaternion(
+      rs.currentQuaternion.x,
+      rs.currentQuaternion.y,
+      rs.currentQuaternion.z,
+      rs.currentQuaternion.w
+    );
+    car.mesh.quaternion.copy(prevQ.slerp(currQ, alpha));
+  } else {
+    car.mesh.position.copy(car.body.position);
+    car.mesh.quaternion.copy(car.body.quaternion);
+  }
   const damageTint = THREE.MathUtils.clamp(state.damage / 100, 0, 1);
   car.mesh.traverse((child) => {
     if (child.material?.color && child.material.metalness !== undefined) {
@@ -504,6 +797,53 @@ function checkObstacleTriggers(dt) {
       }
     }
 
+    if (obstacle.kind === 'wind' && dx < obstacle.radius && dz < obstacle.radius) {
+      state.windTTL = 2.8;
+      state.windDirection = obstacle.direction || 1;
+      state.curseLabel = obstacle.direction > 0 ? 'WIND RIGHT' : 'WIND LEFT';
+      if (!obstacle.used) {
+        obstacle.used = true;
+        flashMessage(state.curseLabel);
+      }
+    }
+
+    if (obstacle.kind === 'fog' && dx < 4.3 && dz < obstacle.radius) {
+      state.fogTTL = Math.max(state.fogTTL, obstacle.duration || 3.2);
+      state.curseLabel = 'FOG BANK';
+      if (!obstacle.used) {
+        obstacle.used = true;
+        flashMessage('FOG BANK');
+      }
+    }
+
+    if (obstacle.kind === 'friction' && dx < obstacle.radius && dz < 3.8) {
+      state.frictionTTL = 1.7;
+      state.frictionGrip = obstacle.grip || 1;
+      state.curseLabel = obstacle.label || 'GRIP SHIFT';
+      if (!obstacle.used) {
+        obstacle.used = true;
+        flashMessage(state.curseLabel);
+      }
+    }
+
+    if (obstacle.kind === 'gravity' && !obstacle.used && dx < obstacle.radius && dz < obstacle.radius) {
+      obstacle.used = true;
+      car.body.velocity.y += obstacle.lift || 14;
+      car.forwardSpeed += 12;
+      state.shake = Math.max(state.shake, 0.75);
+      flashMessage('GRAVITY WELL');
+      playSfx('shock');
+    }
+
+    if (obstacle.kind === 'slipstream' && dx < 1.7 && dz < obstacle.radius) {
+      car.forwardSpeed += (obstacle.boost || 12) * dt;
+      state.curseLabel = 'SLIPSTREAM';
+      if (!obstacle.used) {
+        obstacle.used = true;
+        flashMessage('SLIPSTREAM');
+      }
+    }
+
     if (obstacle.kind === 'gap' && dx < 3.85 && dz < obstacle.radius) {
       car.body.velocity.y -= (1.2 - car.config.clearance) * dt * 22;
       if (!obstacle.used && car.config.clearance < 0.45) {
@@ -519,7 +859,7 @@ function checkObstacleTriggers(dt) {
     car.forwardSpeed = Math.max(car.forwardSpeed, shockSpeed);
     car.body.velocity.z = Math.max(car.body.velocity.z, shockSpeed);
     car.body.velocity.x += (Math.random() - 0.5) * 13;
-    state.nextShockAt = state.time + 9 + Math.random() * 5;
+    state.nextShockAt = state.time + 15 + Math.random() * 7;
     flashMessage('SPEED SHOCK');
     state.shake = Math.max(state.shake, 2.4);
     playSfx('shock');
@@ -532,11 +872,12 @@ function checkImpacts() {
   physicsStats.grounded = false;
   if (
     Math.abs(car.body.position.x) > ROAD_HALF_WIDTH + 2 &&
-    speed > 20 &&
-    state.time - physicsStats.lastShoulderAt > 1.3
+    speed > 14 &&
+    state.time - physicsStats.lastShoulderAt > 0.9
   ) {
     physicsStats.lastShoulderAt = state.time;
-    addDamage(0.025 * speed, 'OFF-ROAD RATTLE');
+    car.forwardSpeed *= 0.9;
+    addDamage(0.045 * speed, 'OFF-ROAD RATTLE');
   }
 
   for (const contact of world.contacts) {
@@ -577,12 +918,61 @@ function stabilizeCarOnTrack(dt) {
   const pull = rideHeight - car.body.position.y;
   if (pull > 0) car.body.position.y += pull * Math.min(1, 32 * dt);
   car.body.velocity.y = Math.max(car.body.velocity.y, -4.5);
+
+  const hasActiveDriveEffect =
+    car.shockTTL > 0 ||
+    car.oilTTL > 0 ||
+    state.windTTL > 0 ||
+    state.frictionTTL > 0 ||
+    keys.has('w') ||
+    keys.has('arrowup') ||
+    keys.has('s') ||
+    keys.has('arrowdown') ||
+    keys.has('a') ||
+    keys.has('arrowleft') ||
+    keys.has('d') ||
+    keys.has('arrowright');
+
+  if (!hasActiveDriveEffect && Math.abs(car.forwardSpeed) < 0.08) {
+    car.forwardSpeed = 0;
+    car.body.velocity.x = 0;
+    car.body.velocity.z = 0;
+    car.body.angularVelocity.x = 0;
+    car.body.angularVelocity.y = 0;
+    if (Math.abs(car.body.angularVelocity.z) < 0.15) car.body.angularVelocity.z = 0;
+    
+    // Flatten orientation to remove post-landing tilt/wobble
+    const euler = new CANNON.Vec3();
+    car.body.quaternion.toEuler(euler);
+    const pitchMag = Math.abs(euler.x);
+    const rollMag = Math.abs(euler.z);
+    if (pitchMag < 0.12 && rollMag < 0.12) {
+      // Small tilt: snap to flat
+      car.body.quaternion.setFromEuler(0, car.yaw || 0, 0);
+    } else {
+      // Larger tilt: lerp toward flat quickly
+      const flatQuat = new CANNON.Quaternion();
+      flatQuat.setFromEuler(0, car.yaw || 0, 0);
+      car.body.quaternion.x += (flatQuat.x - car.body.quaternion.x) * Math.min(1, 8 * dt);
+      car.body.quaternion.y += (flatQuat.y - car.body.quaternion.y) * Math.min(1, 8 * dt);
+      car.body.quaternion.z += (flatQuat.z - car.body.quaternion.z) * Math.min(1, 8 * dt);
+      car.body.quaternion.w += (flatQuat.w - car.body.quaternion.w) * Math.min(1, 8 * dt);
+      car.body.quaternion.normalize();
+    }
+  }
 }
 
 function updateRunState(dt) {
   state.distance = Math.max(0, car.body.position.z);
   runData.distanceSurvived = state.distance;
   runData.cabinDamage = state.damage;
+
+  // Reposition exit portal every 30s to stay ahead of player
+  state.portalTimer += dt;
+  if (state.portalTimer >= 30) {
+    state.portalTimer = 0;
+    spawnExitPortal(scene, car.body.position.z + 350);
+  }
 
   const up = new CANNON.Vec3(0, 1, 0);
   const carUp = car.body.quaternion.vmult(up);
@@ -645,33 +1035,44 @@ function updateCamera(dt) {
   state.flashTTL -= dt;
   if (state.flashTTL <= 0) flash.classList.remove('is-visible');
 
-  const speedMs = car.body.velocity.length();
+  const idleSnapCamera = state.phase === 'running' && isCarIdle() && state.shake < 0.02;
+
+  const speedMs = idleSnapCamera ? 0 : car.body.velocity.length();
   const speedKmh = speedMs * 3.6;
   const speedNorm = THREE.MathUtils.clamp((speedKmh - 22) / 100, 0, 1);
+  const renderPos = car.mesh?.position || car.body.position;
 
-  // Keep camera closer at high speed instead of pulling far back
   const chase = 6.8 + speedNorm * 3.5;
   const shockExtra = car.shockTTL > 0 ? 2.2 : speedNorm * 1.8;
   const target = new THREE.Vector3(
-    car.body.position.x * (0.35 + speedNorm * 0.08),
+    renderPos.x * (0.35 + speedNorm * 0.08),
     4.2 + speedNorm * 0.8,
-    car.body.position.z - chase - shockExtra
+    renderPos.z - chase - shockExtra
   );
-  const shake = state.shake;
+  const shake = idleSnapCamera ? 0 : Math.min(state.shake, car.shockTTL > 0 ? 1.15 : 0.75);
   if (shake > 0.01) {
-    target.x += (Math.random() - 0.5) * shake * 0.8;
-    target.y += (Math.random() - 0.5) * shake * 0.3;
+    const t = state.time;
+    target.x += (Math.sin(t * 31) * 0.45 + Math.sin(t * 13) * 0.25) * shake;
+    target.y += (Math.cos(t * 23) * 0.16 + Math.sin(t * 17) * 0.08) * shake;
   }
-  camera.position.lerp(target, 1 - Math.pow(0.001, dt));
-  
+
   const lookAhead = 8 + speedNorm * 6;
   const look = new THREE.Vector3(
-    car.body.position.x * (0.32 + speedNorm * 0.18),
+    renderPos.x * (0.32 + speedNorm * 0.18),
     1.4 - speedNorm * 0.35,
-    car.body.position.z + lookAhead
+    renderPos.z + lookAhead
   );
-  camera.lookAt(look);
-  
+
+  if (idleSnapCamera) {
+    camera.position.copy(target);
+    cameraLookTarget.copy(look);
+  } else {
+    const follow = car.shockTTL > 0 ? 1 - Math.pow(0.015, dt) : 1 - Math.pow(0.001, dt);
+    camera.position.lerp(target, follow);
+    cameraLookTarget.lerp(look, 1 - Math.pow(0.002, dt));
+  }
+  camera.lookAt(cameraLookTarget);
+
   let targetFov = 58 + speedNorm * 24;
   if (car.shockTTL > 0) targetFov += 12;
   camera.fov += (targetFov - camera.fov) * (1 - Math.pow(0.001, dt));

@@ -4,7 +4,7 @@ import * as THREE from 'three';
 export function createSceneCameraRenderer(canvas, width, height) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87CEEB);
-  scene.fog = new THREE.Fog(0x87CEEB, 50, 350);
+  scene.fog = new THREE.Fog(0x87CEEB, 80, 1200);
 
   const camera = new THREE.PerspectiveCamera(62, width / height, 0.1, 900);
   camera.position.set(0, 5.5, -9);

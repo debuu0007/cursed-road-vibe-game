@@ -175,10 +175,11 @@ function createPortalAt(scene, x, z, colorHex, particleR, particleG, particleB, 
 /**
  * Exit portal (green) — drive in to portal forward.
  * @param {THREE.Scene} scene
+ * @param {number} zPos - Z position for the portal (default 850)
  */
-export function spawnExitPortal(scene) {
+export function spawnExitPortal(scene, zPos = 850) {
   if (exitPortalHandle) scene.remove(exitPortalHandle.group);
-  exitPortalHandle = createPortalAt(scene, -15.5, 850, 0x00ff44, 0, 0.95, 0.35, 'VIBE JAM PORTAL', '#7cff9a');
+  exitPortalHandle = createPortalAt(scene, -15.5, zPos, 0x00ff44, 0, 0.95, 0.35, 'VIBE JAM PORTAL', '#7cff9a');
 }
 
 /**

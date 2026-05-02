@@ -14,21 +14,30 @@ export function drawHUD(canvasW, canvasH, opts) {
   ctx.clearRect(0, 0, canvasW, canvasH);
   if (!car) return;
 
-  const speed = Math.round(car.body.velocity.length() * 3.6);
+  const horizontalSpeed = Math.hypot(car.body.velocity.x, car.body.velocity.z) * 3.6;
+  const speed =
+    car.shockTTL <= 0 &&
+    car.oilTTL <= 0 &&
+    (state.windTTL || 0) <= 0 &&
+    Math.abs(car.forwardSpeed || 0) < 0.35 &&
+    horizontalSpeed < 4
+      ? 0
+      : Math.round(horizontalSpeed);
 
   if (phase === 'running') {
     ctx.save();
     const edge = Math.max(0, Math.min(1, (speed - 25) / 110));
+    const fog = Math.max(0, Math.min(1, (state.fogTTL || 0) / 3.6));
     const vignette = ctx.createRadialGradient(
       canvasW * 0.5,
       canvasH * 0.52,
-      Math.max(canvasW, canvasH) * 0.04,
+      Math.max(canvasW, canvasH) * (0.04 + fog * 0.08),
       canvasW * 0.5,
       canvasH * 0.52,
-      Math.max(canvasW, canvasH) * 0.78
+      Math.max(canvasW, canvasH) * (0.78 - fog * 0.34)
     );
-    vignette.addColorStop(0, 'rgba(0,0,0,0)');
-    vignette.addColorStop(1, `rgba(0,0,0,${0.04 + edge * 0.42})`);
+    vignette.addColorStop(0, `rgba(216,221,224,${fog * 0.12})`);
+    vignette.addColorStop(1, `rgba(${fog ? '216,221,224' : '0,0,0'},${0.04 + edge * 0.42 + fog * 0.48})`);
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, canvasW, canvasH);
     ctx.restore();
@@ -48,9 +57,13 @@ export function drawHUD(canvasW, canvasH, opts) {
   ctx.fillStyle = '#a5aaa7';
   const objY = state.portalUsername && String(state.portalUsername).trim() ? 64 : 52;
   const objectiveText = modeCfg.durationGoal
-    ? `${Math.max(0, Math.ceil(modeCfg.durationGoal - state.time))}s left / ${Math.round(state.distance)}m`
-    : `${Math.round(state.distance)}m / ${modeCfg.goal}`;
+    ? `GOAL: ${Math.max(0, Math.ceil(modeCfg.durationGoal - state.time))}s left`
+    : `GOAL: ${modeCfg.goal}`;
   ctx.fillText(objectiveText, 18, objY);
+  
+  ctx.fillStyle = '#8fd4a8';
+  ctx.font = '800 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText(`DISTANCE: ${Math.round(state.distance)}m`, 18, objY + 18);
 
   const cx = 92;
   const cy = canvasH - 80;
@@ -85,6 +98,11 @@ export function drawHUD(canvasW, canvasH, opts) {
   ctx.fillStyle = '#f2f2ed';
   ctx.textAlign = 'right';
   ctx.fillText(`${Math.round(state.damage)}%`, bx + barW, 30);
+  if (state.curseLabel) {
+    ctx.fillStyle = '#8fd4a8';
+    ctx.font = '800 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(String(state.curseLabel).slice(0, 18), bx + barW, 68);
+  }
 
   if (phase === 'running') {
     ctx.textAlign = 'center';

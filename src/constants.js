@@ -1,5 +1,5 @@
-export const ROAD_HALF_WIDTH = 4;
-export const PLAYABLE_HALF_WIDTH = 27;
+export const ROAD_HALF_WIDTH = 6;
+export const PLAYABLE_HALF_WIDTH = 24;
 export const SCENERY_WRAP_DISTANCE = 2160;
 
 export const STORAGE = {
