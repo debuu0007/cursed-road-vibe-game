@@ -7,6 +7,40 @@ import { ROAD_HALF_WIDTH } from './constants.js';
  * @typedef {{ group: THREE.Group, body: CANNON.Body, z: number, initialZ: number, isGap: boolean }} RoadSegment
  */
 
+/** Shared asphalt / markings — night tune (see {@link applyRoadNightVisuals}). */
+let roadNightMats = /** @type {null | {
+  road: THREE.MeshLambertMaterial;
+  shoulder: THREE.MeshLambertMaterial;
+  yellowLine: THREE.MeshBasicMaterial;
+  whiteLine: THREE.MeshBasicMaterial;
+  baseRoad: THREE.Color;
+  baseShoulder: THREE.Color;
+  baseYellow: THREE.Color;
+  baseWhite: THREE.Color;
+}} */ (null);
+const _roadNightMix = new THREE.Color();
+
+/**
+ * @param {number} nightFactor 0..1 from dynamic sky / headlight factor
+ */
+export function applyRoadNightVisuals(nightFactor) {
+  const b = roadNightMats;
+  if (!b) return;
+  const nf = THREE.MathUtils.clamp(nightFactor, 0, 1);
+  _roadNightMix.setHex(0x666e78);
+  b.road.color.copy(b.baseRoad).lerp(_roadNightMix, nf * 0.72);
+  b.road.emissive.setHex(0x304055);
+  b.road.emissiveIntensity = nf * 1.05;
+
+  _roadNightMix.setHex(0x4e565c);
+  b.shoulder.color.copy(b.baseShoulder).lerp(_roadNightMix, nf * 0.65);
+  b.shoulder.emissive.setHex(0x252c32);
+  b.shoulder.emissiveIntensity = nf * 0.85;
+
+  b.yellowLine.color.copy(b.baseYellow).multiplyScalar(1 + nf * 0.28);
+  b.whiteLine.color.copy(b.baseWhite).multiplyScalar(1 + nf * 0.22);
+}
+
 /**
  * @param {THREE.Scene} scene
  * @param {CANNON.World} world
@@ -18,6 +52,16 @@ export function spawnRoad(scene, world, roadSegments) {
   const dividerMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const yellowLineMat = new THREE.MeshBasicMaterial({ color: 0xf0d84e });
   const whiteLineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  roadNightMats = {
+    road: roadMat,
+    shoulder: shoulderMat,
+    yellowLine: yellowLineMat,
+    whiteLine: whiteLineMat,
+    baseRoad: new THREE.Color(0x3a3d40),
+    baseShoulder: new THREE.Color(0x2a2e30),
+    baseYellow: new THREE.Color(0xf0d84e),
+    baseWhite: new THREE.Color(0xffffff)
+  };
   
   for (let i = 0; i < 70; i += 1) {
     const z = i * 18;

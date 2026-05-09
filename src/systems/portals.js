@@ -216,7 +216,7 @@ export function updatePortalAnimations(nowMs) {
  */
 export function isCarInPortal(car, handle) {
   if (!car?.body || !handle) return false;
-  const p = car.body.position;
+  const p = car.mesh?.position ?? car.body.position;
   const c = handle.center;
   const dx = p.x - c.x;
   const dy = p.y - c.y - 1.25;

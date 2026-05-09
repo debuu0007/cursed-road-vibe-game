@@ -15,7 +15,7 @@ import { STORAGE, ROAD_HALF_WIDTH, PLAYABLE_HALF_WIDTH, SCENERY_WRAP_DISTANCE } 
 import { createWorld } from './physics.js';
 import { createSceneCameraRenderer, resizeRenderer } from './rendererBootstrap.js';
 import { createScenery } from './scenery.js';
-import { spawnRoad, resetRoadSegments, updateRoadStream } from './track.js';
+import { spawnRoad, resetRoadSegments, updateRoadStream, applyRoadNightVisuals } from './track.js';
 import { makeCarMesh, createCarBody } from './cars/carBase.js';
 import { carConfigs, isRickshawUnlocked, markRunCompletedOnce } from './cars/index.js';
 import { spawnObstaclesForMode } from './obstacles/spawnByMode.js';
@@ -36,6 +36,11 @@ import {
   exitPortalHandle,
   entryPortalHandle
 } from './systems/portals.js';
+import { createDynamicSky } from './systems/dynamicSky.js';
+import {
+  attachCarHeadlights,
+  updateHeadlightIntensity
+} from './systems/carHeadlights.js';
 import './styles.css';
 
 /** Snapshot of URL continuity params (read once per page load). */
@@ -66,8 +71,8 @@ const keys = new Set();
 let runData = resetRunData();
 
 const state = {
-  selectedCar: 'hatchback',
-  selectedMode: 'gauntlet',
+  selectedCar: 'sports',
+  selectedMode: 'shock',
   phase: 'menu',
   damage: 0,
   distance: 0,
@@ -90,7 +95,10 @@ const state = {
   /** Incoming player tag from portal (optional). */
   portalUsername: '',
   /** Time since last portal spawn */
-  portalTimer: 0
+  portalTimer: 0,
+  /** HUD: eased speed (km/h) and shock vignette alpha for readable motion. */
+  hudSpeedDisplay: 0,
+  hudShockPulse: 0
 };
 
 const finishState = { won: false, reason: 'Ready' };
@@ -105,12 +113,122 @@ const physicsStats = {
 let scene;
 let camera;
 let renderer;
+/** @type {ReturnType<typeof createDynamicSky> | null} */
+let dynamicSky = null;
 let world;
 let car;
 let carGltfSpawnToken = 0;
 let fixedStepAccumulator = 0;
 let lastTime = performance.now();
 const cameraLookTarget = new THREE.Vector3();
+
+/** Tinyskies-style steering ease — raw keys feed `steerSmoothed` on {@link car}. */
+const STEER_INPUT_SMOOTH = 10;
+const _scratchEuler = new CANNON.Vec3();
+const _scratchEulerLanding = new CANNON.Vec3();
+const _flatQuat = new CANNON.Quaternion();
+const _qMeshPrev = new THREE.Quaternion();
+const _qMeshCurr = new THREE.Quaternion();
+const _damageColorDeep = new THREE.Color(0x2b0907);
+const _scratchBodyColor = new THREE.Color();
+
+const _triggerPos = new THREE.Vector3();
+
+/** Interpolated mesh position — use for hazard/trigger tests the player sees ([`car.mesh`] after [`syncCarMesh`]). */
+function copyPresentationPosition(out) {
+  if (car?.mesh) return out.copy(car.mesh.position);
+  return out.set(car.body.position.x, car.body.position.y, car.body.position.z);
+}
+
+// ── Camera rig: spring-damper follow + smoothed framing (no per-frame Vector3 churn in hot path) ──
+const CAM_STIFFNESS_RUN = 28;
+const CAM_STIFFNESS_IDLE = 88;
+const CAM_STIFFNESS_LOOK = 22;
+const CAM_SPEED_NORM_SMOOTH = 7;
+const CAM_STEER_LEAD_SMOOTH = 9;
+const CAM_STEER_LEAD_GAIN = 0.42;
+const CAM_IDLE_ENTER_SEC = 0.14;
+const CAM_IDLE_BLEND_SMOOTH = 10;
+const CAM_SHAKE_DECAY_PER_S = 0.03;
+const CAM_SHAKE_IMPACT_HI = 1;
+const CAM_SHAKE_RUMBLE_MUL = 0.55;
+const CAM_SHOCK_RUMBLE = 0.18;
+const CAM_FOV_SMOOTH = 6;
+const CAM_FOV_BASE = 58;
+const CAM_FOV_SPEED_MUL = 24;
+const CAM_FOV_SHOCK_ADD = 12;
+const CAM_FOV_MAX_NORMAL = 88;
+const CAM_FOV_MAX_SHOCK = 96;
+const CAM_MENU_STIFFNESS = 18;
+const _camTarget = new THREE.Vector3();
+const _camLook = new THREE.Vector3();
+const _menuCamTarget = new THREE.Vector3(0, 4.8, -8.5);
+const _menuCamLook = new THREE.Vector3(0, 0.7, 2);
+
+/** Persistent camera rig (critically damped springs on pos + look). */
+const cameraRig = {
+  ready: false,
+  pos: new THREE.Vector3(),
+  vel: new THREE.Vector3(),
+  lookPos: new THREE.Vector3(),
+  lookVel: new THREE.Vector3(),
+  speedNorm: 0,
+  steerLead: 0,
+  /** 0 = dynamic follow, 1 = stable idle (after hold). */
+  stableIdleBlend: 0,
+  idleHoldT: 0,
+  fovSmoothed: CAM_FOV_BASE
+};
+
+function camCriticalDamping(stiffness) {
+  return 2 * Math.sqrt(Math.max(0.001, stiffness));
+}
+
+/**
+ * Critically damped spring toward `target` (stable, no overshoot).
+ * @param {THREE.Vector3} pos
+ * @param {THREE.Vector3} vel
+ * @param {THREE.Vector3} target
+ */
+function springDamperVector3(pos, vel, target, dt, stiffness) {
+  const d = camCriticalDamping(stiffness);
+  const ax = stiffness * (target.x - pos.x) - d * vel.x;
+  const ay = stiffness * (target.y - pos.y) - d * vel.y;
+  const az = stiffness * (target.z - pos.z) - d * vel.z;
+  vel.x += ax * dt;
+  vel.y += ay * dt;
+  vel.z += az * dt;
+  pos.x += vel.x * dt;
+  pos.y += vel.y * dt;
+  pos.z += vel.z * dt;
+}
+
+function initCameraRig() {
+  if (!camera) return;
+  cameraRig.ready = true;
+  cameraRig.pos.copy(camera.position);
+  cameraRig.vel.set(0, 0, 0);
+  cameraRig.lookPos.copy(_menuCamLook);
+  cameraRig.lookVel.set(0, 0, 0);
+  cameraRig.speedNorm = 0;
+  cameraRig.steerLead = 0;
+  cameraRig.stableIdleBlend = 0;
+  cameraRig.idleHoldT = 0;
+  cameraRig.fovSmoothed = camera.fov;
+  cameraLookTarget.copy(cameraRig.lookPos);
+}
+
+/** Call when a new run starts so the rig doesn’t snap from menu/preview pose. */
+function resetCameraRigForRunStart() {
+  if (!camera || !cameraRig.ready) return;
+  cameraRig.pos.copy(camera.position);
+  cameraRig.vel.set(0, 0, 0);
+  cameraRig.lookPos.copy(cameraLookTarget);
+  cameraRig.lookVel.set(0, 0, 0);
+  cameraRig.idleHoldT = 0;
+  cameraRig.stableIdleBlend = 0;
+}
+
 const FIXED_DELTA = 1 / 60;
 const MAX_FRAME_DELTA = 0.1;
 const MAX_PHYSICS_SUBSTEPS = 6;
@@ -127,11 +245,11 @@ function mapPortalColorToCarId(colorRaw, rickshawOk) {
   const c = (colorRaw || '').toLowerCase().trim();
   if (/(green|lime|mint)/i.test(c) || c === '#57c785') return 'suv';
   if (/(blue|azure|steel)/i.test(c) || c === '#4e8df5') return 'sports';
-  if (/(yellow|orange|gold|amber)/i.test(c)) return rickshawOk ? 'rickshaw' : 'hatchback';
+  if (/(yellow|orange|gold|amber)/i.test(c)) return rickshawOk ? 'rickshaw' : 'sports';
   if (/truck|brown|taupe/.test(c) || c === '#8b7c6a') return 'truck';
   if (/(red|crimson|ruby)/i.test(c)) return 'hatchback';
   if (/(white|silver|grey|gray)/i.test(c)) return 'suv';
-  return 'hatchback';
+  return 'sports';
 }
 
 function applyPortalBootstrap() {
@@ -173,12 +291,17 @@ function init() {
   scene = boot.scene;
   camera = boot.camera;
   renderer = boot.renderer;
+  initCameraRig();
   world = createWorld();
   const hemi = new THREE.HemisphereLight(0x87CEEB, 0x4a7c3a, 1.4);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffffff, 1.8);
   sun.position.set(-8, 15, -6);
+  scene.add(sun.target);
   scene.add(sun);
+  if (scene.fog && camera) {
+    dynamicSky = createDynamicSky(scene, camera, { hemi, sun, fog: scene.fog });
+  }
   createScenery(scene, world, trees, obstacleBodies);
   spawnRoad(scene, world, roadSegments);
   spawnExitPortal(scene);
@@ -208,7 +331,18 @@ function spawnCar() {
   world.addBody(body);
   const mesh = makeCarMesh(config);
   scene.add(mesh);
-  car = { body, mesh, config, grounded: true, oilTTL: 0, shockTTL: 0, yaw: 0, forwardSpeed: 0 };
+  car = {
+    body,
+    mesh,
+    config,
+    grounded: true,
+    oilTTL: 0,
+    shockTTL: 0,
+    yaw: 0,
+    forwardSpeed: 0,
+    steerSmoothed: 0
+  };
+  attachCarHeadlights(car);
   car.body.velocity.set(0, 0, 0);
   car.body.angularVelocity.set(0, 0, 0);
   initCarRenderState();
@@ -237,7 +371,8 @@ function resetRun() {
     car.body.angularVelocity.set(0, 0, 0);
     car.yaw = 0;
     car.forwardSpeed = 0;
-    
+    car.steerSmoothed = 0;
+
     // Sync render state immediately to prevent interpolation flicker
     initCarRenderState();
     syncCarMesh(1);
@@ -248,6 +383,7 @@ function resetRun() {
     car.forwardSpeed = THREE.MathUtils.clamp(boost * 1.03, 0, Math.max(car.config.speed * 2.9, boost));
     pendingPortalForwardSpeed = null;
   }
+  resetCameraRigForRunStart();
   fixedStepAccumulator = 0;
   state.phase = 'running';
   state.damage = 0;
@@ -265,6 +401,8 @@ function resetRun() {
   state.curseLabel = '';
   state.portalTimer = 0;
   state.repairs = 0;
+  state.hudSpeedDisplay = 0;
+  state.hudShockPulse = 0;
   flash.textContent = '';
   flash.classList.remove('is-visible');
   finishState.won = false;
@@ -327,7 +465,7 @@ function resetTrees() {
 }
 
 function refreshPicker() {
-  if (state.selectedCar === 'rickshaw' && !isRickshawUnlocked()) state.selectedCar = 'hatchback';
+  if (state.selectedCar === 'rickshaw' && !isRickshawUnlocked()) state.selectedCar = 'sports';
   buildPicker({
     carWrap,
     modeWrap,
@@ -410,6 +548,7 @@ function loop(now) {
     requestAnimationFrame(loop);
     return;
   }
+  dynamicSky?.update(dt);
   updatePortalAnimations(now);
   if (state.phase === 'running') updateGame(dt);
   else {
@@ -417,6 +556,15 @@ function loop(now) {
     stopEngineForMenu();
   }
   updateCamera(dt);
+  if (car && state.phase === 'running') {
+    const tgtKmh = getCarSpeedKmh();
+    state.hudSpeedDisplay += (tgtKmh - state.hudSpeedDisplay) * (1 - Math.exp(-14 * dt));
+    const shockTarget = car.shockTTL > 0 ? Math.min(0.55, car.shockTTL / 4.2) : 0;
+    state.hudShockPulse += (shockTarget - state.hudShockPulse) * (1 - Math.exp(-12 * dt));
+  } else if (car) {
+    state.hudSpeedDisplay = getCarSpeedKmh();
+    state.hudShockPulse = 0;
+  }
   renderer.render(scene, camera);
   drawHUD(window.innerWidth, window.innerHeight, {
     ctx,
@@ -468,9 +616,12 @@ function updateCurseTimers(dt) {
 
 function updateMovingHazards(dt) {
   if (!car) return;
+  copyPresentationPosition(_triggerPos);
+  const pz = _triggerPos.z;
+  const px = _triggerPos.x;
   for (const obstacle of obstacles) {
     if (obstacle.kind !== 'traffic' || obstacle.used) continue;
-    const ahead = obstacle.mesh.position.z - car.body.position.z;
+    const ahead = obstacle.mesh.position.z - pz;
     if (ahead > 180) continue;
     obstacle.mesh.position.z -= (obstacle.speed || 42) * dt;
     if (ahead < -45) {
@@ -478,8 +629,8 @@ function updateMovingHazards(dt) {
       obstacle.mesh.visible = false;
       continue;
     }
-    const dx = Math.abs(car.body.position.x - obstacle.mesh.position.x);
-    const dz = Math.abs(car.body.position.z - obstacle.mesh.position.z);
+    const dx = Math.abs(px - obstacle.mesh.position.x);
+    const dz = Math.abs(pz - obstacle.mesh.position.z);
     if (dz < 58 && !obstacle.warned) {
       obstacle.warned = true;
       state.curseLabel = obstacle.mesh.position.x < 0 ? 'ONCOMING LEFT' : 'ONCOMING RIGHT';
@@ -489,7 +640,7 @@ function updateMovingHazards(dt) {
       obstacle.used = true;
       obstacle.mesh.visible = false;
       car.forwardSpeed *= 0.18;
-      car.body.velocity.x += Math.sign(car.body.position.x - obstacle.mesh.position.x || 1) * 12;
+      car.body.velocity.x += Math.sign(px - obstacle.mesh.position.x || 1) * 12;
       state.shake = Math.max(state.shake, 1.9);
       addDamage(obstacle.hitDamage || 42, 'HEAD-ON');
       playSfx('crash');
@@ -648,8 +799,6 @@ function idlePreview(dt) {
   car.body.angularVelocity.set(0, 0, 0);
   captureCurrentPhysicsState();
   syncCarMesh(1);
-  camera.position.lerp(new THREE.Vector3(0, 4.8, -8.5), 0.04);
-  camera.lookAt(0, 0.7, 2);
 }
 
 function applyDriving(dt) {
@@ -666,7 +815,9 @@ function applyDriving(dt) {
   const useTilt = state.tiltEnabled && Math.abs(tiltSteer) > 0.06;
   const rawSteer = useTilt ? tiltSteer : steerKey;
   const oilInvert = car.oilTTL > 0 ? -1 : 1;
-  const steer = rawSteer * oilInvert;
+  const steerCommand = rawSteer * oilInvert;
+  car.steerSmoothed += (steerCommand - car.steerSmoothed) * (1 - Math.exp(-STEER_INPUT_SMOOTH * dt));
+  const steer = car.steerSmoothed;
   const grip = state.frictionTTL > 0 ? state.frictionGrip : 1;
   const oilFactor = (car.oilTTL > 0 ? 0.32 : 1) * THREE.MathUtils.clamp(grip, 0.28, 1.35);
   const offroadFactor = Math.abs(body.position.x) > ROAD_HALF_WIDTH + 2 ? 0.45 : 1;
@@ -683,11 +834,10 @@ function applyDriving(dt) {
   car.yaw = THREE.MathUtils.clamp(car.yaw, -0.52, 0.52);
   car.yaw *= Math.pow(car.oilTTL > 0 ? 0.98 : 0.86, dt * 10);
 
-  const euler = new CANNON.Vec3();
-  body.quaternion.toEuler(euler);
+  body.quaternion.toEuler(_scratchEuler);
   const pitchDamp = physicsStats.grounded ? 0.36 : 0.9;
   const rollDamp = physicsStats.grounded ? 0.32 : 0.84;
-  body.quaternion.setFromEuler(euler.x * pitchDamp, car.yaw, euler.z * rollDamp);
+  body.quaternion.setFromEuler(_scratchEuler.x * pitchDamp, car.yaw, _scratchEuler.z * rollDamp);
   body.angularVelocity.x *= physicsStats.grounded ? 0.32 : 0.45;
   body.angularVelocity.y *= 0.28;
   body.angularVelocity.z *= physicsStats.grounded ? 0.28 : 0.42;
@@ -758,33 +908,28 @@ function syncCarMesh(alpha = 1) {
       THREE.MathUtils.lerp(rs.previousPosition.y, rs.currentPosition.y, alpha),
       THREE.MathUtils.lerp(rs.previousPosition.z, rs.currentPosition.z, alpha)
     );
-    const prevQ = new THREE.Quaternion(
-      rs.previousQuaternion.x,
-      rs.previousQuaternion.y,
-      rs.previousQuaternion.z,
-      rs.previousQuaternion.w
-    );
-    const currQ = new THREE.Quaternion(
-      rs.currentQuaternion.x,
-      rs.currentQuaternion.y,
-      rs.currentQuaternion.z,
-      rs.currentQuaternion.w
-    );
-    car.mesh.quaternion.copy(prevQ.slerp(currQ, alpha));
+    _qMeshPrev.set(rs.previousQuaternion.x, rs.previousQuaternion.y, rs.previousQuaternion.z, rs.previousQuaternion.w);
+    _qMeshCurr.set(rs.currentQuaternion.x, rs.currentQuaternion.y, rs.currentQuaternion.z, rs.currentQuaternion.w);
+    car.mesh.quaternion.copy(_qMeshPrev.slerp(_qMeshCurr, alpha));
   } else {
     car.mesh.position.copy(car.body.position);
     car.mesh.quaternion.copy(car.body.quaternion);
   }
   const damageTint = THREE.MathUtils.clamp(state.damage / 100, 0, 1);
+  const nf = dynamicSky?.getHeadlightFactor?.() ?? 0;
+  _scratchBodyColor.set(car.config.color).lerp(_damageColorDeep, damageTint * 0.72);
   car.mesh.traverse((child) => {
     if (child.material?.color && child.material.metalness !== undefined) {
-      child.material.color.set(car.config.color).lerp(new THREE.Color(0x2b0907), damageTint * 0.72);
+      child.material.color.copy(_scratchBodyColor);
     }
   });
+  updateHeadlightIntensity(car, nf);
+  applyRoadNightVisuals(nf);
 }
 
 function checkObstacleTriggers(dt) {
-  const pos = car.body.position;
+  copyPresentationPosition(_triggerPos);
+  const pos = _triggerPos;
   for (const obstacle of obstacles) {
     const dz = Math.abs(pos.z - obstacle.mesh.position.z);
     if (dz > 5.5) continue;
@@ -955,21 +1100,19 @@ function stabilizeCarOnTrack(dt) {
     if (Math.abs(car.body.angularVelocity.z) < 0.15) car.body.angularVelocity.z = 0;
     
     // Flatten orientation to remove post-landing tilt/wobble
-    const euler = new CANNON.Vec3();
-    car.body.quaternion.toEuler(euler);
-    const pitchMag = Math.abs(euler.x);
-    const rollMag = Math.abs(euler.z);
+    car.body.quaternion.toEuler(_scratchEuler);
+    const pitchMag = Math.abs(_scratchEuler.x);
+    const rollMag = Math.abs(_scratchEuler.z);
     if (pitchMag < 0.12 && rollMag < 0.12) {
       // Small tilt: snap to flat
       car.body.quaternion.setFromEuler(0, car.yaw || 0, 0);
     } else {
       // Larger tilt: lerp toward flat quickly
-      const flatQuat = new CANNON.Quaternion();
-      flatQuat.setFromEuler(0, car.yaw || 0, 0);
-      car.body.quaternion.x += (flatQuat.x - car.body.quaternion.x) * Math.min(1, 8 * dt);
-      car.body.quaternion.y += (flatQuat.y - car.body.quaternion.y) * Math.min(1, 8 * dt);
-      car.body.quaternion.z += (flatQuat.z - car.body.quaternion.z) * Math.min(1, 8 * dt);
-      car.body.quaternion.w += (flatQuat.w - car.body.quaternion.w) * Math.min(1, 8 * dt);
+      _flatQuat.setFromEuler(0, car.yaw || 0, 0);
+      car.body.quaternion.x += (_flatQuat.x - car.body.quaternion.x) * Math.min(1, 8 * dt);
+      car.body.quaternion.y += (_flatQuat.y - car.body.quaternion.y) * Math.min(1, 8 * dt);
+      car.body.quaternion.z += (_flatQuat.z - car.body.quaternion.z) * Math.min(1, 8 * dt);
+      car.body.quaternion.w += (_flatQuat.w - car.body.quaternion.w) * Math.min(1, 8 * dt);
       car.body.quaternion.normalize();
     }
   }
@@ -1000,9 +1143,8 @@ function updateRunState(dt) {
   const airborne = !physicsStats.grounded && car.body.position.y > car.config.scale[1] / 2 + 0.7;
   if (airborne) runData.airtime += dt;
   if (!airborne && car.grounded === false) {
-    const euler = new CANNON.Vec3();
-    car.body.quaternion.toEuler(euler);
-    const landingAngle = Math.abs(euler.x) * 57.3;
+    car.body.quaternion.toEuler(_scratchEulerLanding);
+    const landingAngle = Math.abs(_scratchEulerLanding.x) * 57.3;
     if (landingAngle > 10) runData.landingAngles.push(landingAngle);
     addDamage(Math.max(0, landingAngle - 12) * 0.18, 'ROUGH LANDING');
   }
@@ -1043,53 +1185,96 @@ function flashMessage(text) {
 }
 
 function updateCamera(dt) {
-  if (!car) return;
-  state.shake *= Math.pow(0.03, dt);
+  if (!camera || !car) return;
+  if (!cameraRig.ready) initCameraRig();
+
+  state.shake *= Math.pow(CAM_SHAKE_DECAY_PER_S, dt);
   state.flashTTL -= dt;
   if (state.flashTTL <= 0) flash.classList.remove('is-visible');
 
-  const idleSnapCamera = state.phase === 'running' && isCarIdle() && state.shake < 0.02;
+  /* Menu / results: soft orbit; same spring rig avoids snaps when returning to Run. */
+  if (state.phase !== 'running') {
+    springDamperVector3(cameraRig.pos, cameraRig.vel, _menuCamTarget, dt, CAM_MENU_STIFFNESS);
+    springDamperVector3(cameraRig.lookPos, cameraRig.lookVel, _menuCamLook, dt, CAM_MENU_STIFFNESS * 0.85);
+    camera.position.copy(cameraRig.pos);
+    cameraLookTarget.copy(cameraRig.lookPos);
+    camera.lookAt(cameraLookTarget);
+    const menuFov = CAM_FOV_BASE;
+    cameraRig.fovSmoothed += (menuFov - cameraRig.fovSmoothed) * Math.min(1, CAM_FOV_SMOOTH * dt);
+    camera.fov += (cameraRig.fovSmoothed - camera.fov) * Math.min(1, CAM_FOV_SMOOTH * dt);
+    camera.updateProjectionMatrix();
+    return;
+  }
 
-  const speedMs = idleSnapCamera ? 0 : car.body.velocity.length();
-  const speedKmh = speedMs * 3.6;
-  const speedNorm = THREE.MathUtils.clamp((speedKmh - 22) / 100, 0, 1);
   const renderPos = car.mesh?.position || car.body.position;
+  const rawIdle =
+    isCarIdle() && state.shake < 0.02;
+  if (rawIdle) cameraRig.idleHoldT += dt;
+  else cameraRig.idleHoldT = 0;
+  const idleTargetBlend = cameraRig.idleHoldT >= CAM_IDLE_ENTER_SEC ? 1 : 0;
+  cameraRig.stableIdleBlend += (idleTargetBlend - cameraRig.stableIdleBlend) *
+    (1 - Math.exp(-CAM_IDLE_BLEND_SMOOTH * dt));
+
+  const useIdlePhysics = cameraRig.stableIdleBlend > 0.75;
+  const speedMs = useIdlePhysics ? 0 : car.body.velocity.length();
+  const speedKmh = speedMs * 3.6;
+  const speedNormRaw = THREE.MathUtils.clamp((speedKmh - 22) / 100, 0, 1);
+  cameraRig.speedNorm += (speedNormRaw - cameraRig.speedNorm) *
+    (1 - Math.exp(-CAM_SPEED_NORM_SMOOTH * dt));
+  const speedNorm = cameraRig.speedNorm;
+
+  const steerKey =
+    (keys.has('a') || keys.has('arrowleft') ? 1 : 0) - (keys.has('d') || keys.has('arrowright') ? 1 : 0);
+  const tiltSteer = state.tiltEnabled ? THREE.MathUtils.clamp(deviceGamma / 24, -1, 1) : 0;
+  const useTilt = state.tiltEnabled && Math.abs(tiltSteer) > 0.06;
+  const rawSteer = useTilt ? tiltSteer : steerKey;
+  const steerTarget = THREE.MathUtils.clamp(rawSteer * CAM_STEER_LEAD_GAIN, -CAM_STEER_LEAD_GAIN, CAM_STEER_LEAD_GAIN);
+  cameraRig.steerLead += (steerTarget - cameraRig.steerLead) * (1 - Math.exp(-CAM_STEER_LEAD_SMOOTH * dt));
+
+  const stiffnessPos = THREE.MathUtils.lerp(CAM_STIFFNESS_RUN, CAM_STIFFNESS_IDLE, cameraRig.stableIdleBlend);
 
   const chase = 6.8 + speedNorm * 3.5;
   const shockExtra = car.shockTTL > 0 ? 2.2 : speedNorm * 1.8;
-  const target = new THREE.Vector3(
-    renderPos.x * (0.35 + speedNorm * 0.08),
+  const lateral = renderPos.x * (0.35 + speedNorm * 0.08) + cameraRig.steerLead * (1.1 + speedNorm * 0.9);
+
+  _camTarget.set(
+    lateral,
     4.2 + speedNorm * 0.8,
     renderPos.z - chase - shockExtra
   );
-  const shake = idleSnapCamera ? 0 : Math.min(state.shake, car.shockTTL > 0 ? 1.15 : 0.75);
-  if (shake > 0.01) {
-    const t = state.time;
-    target.x += (Math.sin(t * 31) * 0.45 + Math.sin(t * 13) * 0.25) * shake;
-    target.y += (Math.cos(t * 23) * 0.16 + Math.sin(t * 17) * 0.08) * shake;
+
+  const inShock = car.shockTTL > 0;
+  const shakeCap = inShock ? 1.15 : 0.75;
+  const impactAmp = Math.min(state.shake, shakeCap);
+  const rumbleAmp = Math.min(state.shake * CAM_SHAKE_RUMBLE_MUL, shakeCap * 0.65) + (inShock ? CAM_SHOCK_RUMBLE : 0);
+  const t = state.time;
+  if (impactAmp > 0.004) {
+    _camTarget.x += (Math.sin(t * 31) * 0.45 + Math.sin(t * 13) * 0.25) * impactAmp * CAM_SHAKE_IMPACT_HI;
+    _camTarget.y += (Math.cos(t * 23) * 0.16 + Math.sin(t * 17) * 0.08) * impactAmp * CAM_SHAKE_IMPACT_HI;
+  }
+  if (rumbleAmp > 0.004) {
+    _camTarget.x += Math.sin(t * 7.2 + renderPos.z * 0.02) * 0.22 * rumbleAmp;
+    _camTarget.y += Math.cos(t * 5.1) * 0.1 * rumbleAmp;
   }
 
-  const follow = car.shockTTL > 0 ? 1 - Math.pow(0.015, dt) : 1 - Math.pow(0.001, dt);
+  springDamperVector3(cameraRig.pos, cameraRig.vel, _camTarget, dt, stiffnessPos);
+  camera.position.copy(cameraRig.pos);
+
   const lookAhead = 8 + speedNorm * 6;
-  const look = new THREE.Vector3(
-    renderPos.x * (0.32 + speedNorm * 0.18),
-    1.4 - speedNorm * 0.35,
-    renderPos.z + lookAhead
-  );
+  const lookX = renderPos.x * (0.32 + speedNorm * 0.18) + cameraRig.steerLead * (2.2 + speedNorm * 2.5);
+  _camLook.set(lookX, 1.4 - speedNorm * 0.35, renderPos.z + lookAhead);
 
-  if (idleSnapCamera) {
-    camera.position.copy(target);
-    cameraLookTarget.copy(look);
-  } else {
-    const follow = car.shockTTL > 0 ? 1 - Math.pow(0.015, dt) : 1 - Math.pow(0.001, dt);
-    camera.position.lerp(target, follow);
-    cameraLookTarget.lerp(look, 1 - Math.pow(0.002, dt));
-  }
+  const stiffnessLook = THREE.MathUtils.lerp(CAM_STIFFNESS_LOOK, CAM_STIFFNESS_LOOK * 1.35, cameraRig.stableIdleBlend);
+  springDamperVector3(cameraRig.lookPos, cameraRig.lookVel, _camLook, dt, stiffnessLook);
+  cameraLookTarget.copy(cameraRig.lookPos);
   camera.lookAt(cameraLookTarget);
 
-  let targetFov = 58 + speedNorm * 24;
-  if (car.shockTTL > 0) targetFov += 12;
-  camera.fov += (targetFov - camera.fov) * (1 - Math.pow(0.001, dt));
+  let wantFov = CAM_FOV_BASE + speedNorm * CAM_FOV_SPEED_MUL;
+  if (inShock) wantFov += CAM_FOV_SHOCK_ADD;
+  const fovCap = inShock ? CAM_FOV_MAX_SHOCK : CAM_FOV_MAX_NORMAL;
+  wantFov = Math.min(wantFov, fovCap);
+  cameraRig.fovSmoothed += (wantFov - cameraRig.fovSmoothed) * Math.min(1, CAM_FOV_SMOOTH * dt);
+  camera.fov += (cameraRig.fovSmoothed - camera.fov) * Math.min(1, CAM_FOV_SMOOTH * 1.15 * dt);
   camera.updateProjectionMatrix();
 }
 

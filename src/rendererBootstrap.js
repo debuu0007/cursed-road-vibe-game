@@ -3,6 +3,7 @@ import * as THREE from 'three';
 /** @param {HTMLCanvasElement} canvas */
 export function createSceneCameraRenderer(canvas, width, height) {
   const scene = new THREE.Scene();
+  /** Initial values; overridden every frame by dynamic sky + matching fog. */
   scene.background = new THREE.Color(0x87CEEB);
   scene.fog = new THREE.Fog(0x87CEEB, 80, 1200);
 

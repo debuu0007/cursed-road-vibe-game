@@ -15,18 +15,19 @@ export function drawHUD(canvasW, canvasH, opts) {
   if (!car) return;
 
   const horizontalSpeed = Math.hypot(car.body.velocity.x, car.body.velocity.z) * 3.6;
-  const speed =
+  const idleZero =
     car.shockTTL <= 0 &&
     car.oilTTL <= 0 &&
     (state.windTTL || 0) <= 0 &&
     Math.abs(car.forwardSpeed || 0) < 0.35 &&
-    horizontalSpeed < 4
-      ? 0
-      : Math.round(horizontalSpeed);
+    horizontalSpeed < 4;
+  const speedRaw = idleZero ? 0 : horizontalSpeed;
+  const speedDisplay = typeof state.hudSpeedDisplay === 'number' ? state.hudSpeedDisplay : speedRaw;
+  const speed = Math.round(speedDisplay);
 
   if (phase === 'running') {
     ctx.save();
-    const edge = Math.max(0, Math.min(1, (speed - 25) / 110));
+    const edge = Math.max(0, Math.min(1, (speedDisplay - 25) / 110));
     const fog = Math.max(0, Math.min(1, (state.fogTTL || 0) / 3.6));
     const vignette = ctx.createRadialGradient(
       canvasW * 0.5,
@@ -72,8 +73,8 @@ export function drawHUD(canvasW, canvasH, opts) {
   ctx.beginPath();
   ctx.arc(cx, cy, 48, Math.PI * 0.8, Math.PI * 2.2);
   ctx.stroke();
-  const arcFrac = Math.min(1, Math.pow(speed / 125, 0.95));
-  ctx.strokeStyle = speed > 160 ? '#f05343' : '#e6d75b';
+  const arcFrac = Math.min(1, Math.pow(speedDisplay / 125, 0.95));
+  ctx.strokeStyle = speedDisplay > 160 ? '#f05343' : '#e6d75b';
   ctx.beginPath();
   ctx.arc(cx, cy, 48, Math.PI * 0.8, Math.PI * (0.8 + arcFrac * 1.4));
   ctx.stroke();
@@ -116,9 +117,15 @@ export function drawHUD(canvasW, canvasH, opts) {
   }
   ctx.restore();
 
-  if (phase === 'running' && car.shockTTL > 0) {
+  const shockAlpha =
+    typeof state.hudShockPulse === 'number' && state.hudShockPulse > 0
+      ? state.hudShockPulse
+      : car.shockTTL > 0
+        ? Math.min(0.55, car.shockTTL / 4.2)
+        : 0;
+  if (phase === 'running' && shockAlpha > 0.01) {
     ctx.save();
-    ctx.globalAlpha = Math.min(0.55, car.shockTTL / 4.2);
+    ctx.globalAlpha = shockAlpha;
     ctx.strokeStyle = '#f2f2ed';
     ctx.lineWidth = 2;
     for (let i = 0; i < 18; i += 1) {

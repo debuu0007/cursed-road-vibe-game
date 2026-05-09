@@ -2,18 +2,18 @@
 
 /** @type {Record<string, ModeConfig>} */
 export const modeConfigs = {
-  gauntlet: {
-    name: 'Pothole Gauntlet',
-    goal: 'Reach 1300m',
-    distanceGoal: 1300,
-    durationGoal: null,
-    seedKey: null
-  },
   shock: {
     name: 'Speed Shock',
     goal: 'Survive 120s',
     distanceGoal: 2200,
     durationGoal: 120,
+    seedKey: null
+  },
+  gauntlet: {
+    name: 'Pothole Gauntlet',
+    goal: 'Reach 1300m',
+    distanceGoal: 1300,
+    durationGoal: null,
     seedKey: null
   },
   obstacle: {

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:fresh": "vite --force",
     "build": "vite build",
     "preview": "vite preview",
     "preview:build": "vite build && vite preview"

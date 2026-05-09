@@ -38,7 +38,9 @@ export function swapIfValidGltfRoot(car, templateRoot, cfg) {
   pivot.rotation.y = yaw;
   pivot.add(clone);
 
-  while (car.mesh.children.length) car.mesh.remove(car.mesh.children[0]);
+  for (const ch of [...car.mesh.children]) {
+    if (!ch.userData?.preserveDuringGltfSwap) car.mesh.remove(ch);
+  }
   car.mesh.add(pivot);
   return true;
 }
