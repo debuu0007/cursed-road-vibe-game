@@ -1,4 +1,7 @@
 # 🚗💥 CURSED ROAD — Instant Browser Survival Simulator
+Live link: 
+https://cursed-road-vibe-game.vercel.app/
+
 ### Build Plan & Technical Specification
 
 ---
