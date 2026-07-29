@@ -17,6 +17,8 @@ const (
 	MaxPlayers       = 20
 	TickRate         = 20
 	DefaultWorldSeed = int64(0xC012ED)
+	trafficLead      = 80.0
+	trafficSpeed     = 1.6
 )
 
 type Subscription struct {
@@ -226,10 +228,27 @@ func activePlayerHazards(timeline []curse.Event, distance float64, consumed map[
 	visible := hazards[:0]
 	for _, hazard := range hazards {
 		if hazard.Kind != string(curse.Shock) {
+			if hazard.Kind == string(curse.Traffic) {
+				if distance < hazard.Distance-trafficLead {
+					hazard.Warning = true
+					hazard.Distance = distance + 60
+				} else {
+					hazard.Warning = false
+					hazard.Distance = trafficPosition(hazard.Distance, distance)
+				}
+			}
 			visible = append(visible, hazard)
 		}
 	}
 	return visible
+}
+
+func trafficPosition(eventDistance, playerDistance float64) float64 {
+	progress := playerDistance - (eventDistance - trafficLead)
+	if progress <= 0 {
+		return eventDistance
+	}
+	return eventDistance - progress*trafficSpeed
 }
 
 func advancePlayer(player *game.Player, timeline []curse.Event, resolved map[int]map[string]bool, consumed map[int]bool, roomDistance, speedMultiplier float64, tick uint64) {
@@ -312,10 +331,14 @@ func resolveHazards(player *game.Player, timeline []curse.Event, resolved map[in
 	}
 	start := sort.Search(len(timeline), func(i int) bool { return timeline[i].Distance >= distance-120 })
 	for _, event := range timeline[start:] {
-		if event.Distance > distance+2 {
+		if event.Distance > distance+90 {
 			break
 		}
-		if distance > event.Distance+event.Length {
+		collisionDistance := event.Distance
+		if event.Kind == curse.Traffic {
+			collisionDistance = trafficPosition(event.Distance, distance)
+		}
+		if collisionDistance > distance+2 || distance > collisionDistance+event.Length {
 			continue
 		}
 		if event.Kind == curse.Fog || event.Kind == curse.Shock {
@@ -337,7 +360,7 @@ func resolveHazards(player *game.Player, timeline []curse.Event, resolved map[in
 			player.Flash = "CONTROLS REVERSED"
 			player.FlashUntil = player.ReverseUntil
 		case curse.Traffic:
-			player.ApplyDamage(46, "WRONG-WAY TRAFFIC")
+			player.ApplyDamage(46, "WRONG-WAY TRAFFIC", tick)
 			player.FlashUntil = tick + 2*TickRate
 		case curse.Slipstream:
 			player.SlipstreamUntil = tick + 2*TickRate
@@ -350,7 +373,7 @@ func resolveHazards(player *game.Player, timeline []curse.Event, resolved map[in
 				player.FlashUntil = tick + 2*TickRate
 			}
 		case curse.Gap:
-			player.ApplyDamage(58, "ROAD GAP")
+			player.ApplyDamage(58, "ROAD GAP", tick)
 			player.FlashUntil = tick + 2*TickRate
 			player.Lane = (player.Lane + 2) % game.LaneCount
 		}

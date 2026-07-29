@@ -4,16 +4,19 @@ import "testing"
 
 func TestDamageStatusAndScore(t *testing.T) {
 	p := NewPlayer("p1", "driver")
-	if dead := p.ApplyDamage(46, "WRONG-WAY TRAFFIC"); dead {
+	if dead := p.ApplyDamage(46, "WRONG-WAY TRAFFIC", 10); dead {
 		t.Fatal("46 damage should not kill a fresh player")
 	}
 	if got := SurvivalStatus(p.Damage); got != "Shaken But Alive" {
 		t.Fatalf("status = %q", got)
 	}
+	if !ViewOf(p, 11).Hit || ViewOf(p, 13).Hit {
+		t.Fatal("three-tick hit feedback window is incorrect")
+	}
 	if got := Score(123.9, p.Damage); got != 177 {
 		t.Fatalf("score = %d, want 177", got)
 	}
-	if dead := p.ApplyDamage(80, "ROAD GAP"); !dead {
+	if dead := p.ApplyDamage(80, "ROAD GAP", 20); !dead {
 		t.Fatal("damage should clamp and kill")
 	}
 	if p.Damage != 100 || SurvivalStatus(p.Damage) != "Flatlined" {

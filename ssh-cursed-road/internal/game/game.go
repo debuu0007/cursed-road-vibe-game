@@ -36,6 +36,7 @@ type Player struct {
 	DeathTick       uint64
 	ScoreRecorded   bool
 	FlashUntil      uint64
+	HitUntil        uint64
 }
 
 type InputKind int
@@ -67,6 +68,7 @@ type PlayerView struct {
 	Reversed   bool
 	Slipstream bool
 	DeathTick  uint64
+	Hit        bool
 }
 
 type HazardView struct {
@@ -101,7 +103,7 @@ func ViewOf(p Player, tick uint64) PlayerView {
 		SpeedNudge: p.SpeedNudge, Damage: p.Damage, Distance: p.Distance,
 		State: p.State, Cause: p.Cause, Flash: flash,
 		Reversed: tick < p.ReverseUntil, Slipstream: tick < p.SlipstreamUntil,
-		DeathTick: p.DeathTick,
+		DeathTick: p.DeathTick, Hit: tick < p.HitUntil,
 	}
 }
 
@@ -126,11 +128,12 @@ func (p *Player) Nudge(direction int) {
 	p.SpeedNudge = clamp(p.SpeedNudge+direction, -1, 1)
 }
 
-func (p *Player) ApplyDamage(amount int, cause string) bool {
+func (p *Player) ApplyDamage(amount int, cause string, tick uint64) bool {
 	if p.State != Racing || amount <= 0 {
 		return false
 	}
 	p.Damage = clamp(p.Damage+amount, 0, MaxDamage)
+	p.HitUntil = tick + 3
 	p.Flash = fmt.Sprintf("HIT: %s (+%d)", cause, amount)
 	if p.Damage >= MaxDamage {
 		p.State = Exploding

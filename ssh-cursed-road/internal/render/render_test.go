@@ -49,6 +49,31 @@ func TestHazardsRenderAgainstLocalPersonalDistance(t *testing.T) {
 	}
 }
 
+func TestExplosionAdvancesAcrossFrames(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, tick := range []uint64{10, 20, 30, 40} {
+		seen[explosionFrame(tick-10, true)] = true
+	}
+	if len(seen) != 4 {
+		t.Fatalf("explosion produced %d distinct frames, want 4", len(seen))
+	}
+}
+
+func TestHitCarUsesReverseVideoStyle(t *testing.T) {
+	renderer := trueColorRenderer()
+	styles := NewStyles(renderer, TrueColor)
+	snapshot := game.Snapshot{
+		Tick: 10,
+		Players: []game.PlayerView{{
+			ID: "self", Name: "alice", Lane: 2, State: game.Racing, Hit: true,
+		}},
+	}
+	view := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer, Styles: styles})
+	if !strings.Contains(view, styles.spanPrefix[styleCarHit]) {
+		t.Fatal("hit car did not use cached reverse-video style")
+	}
+}
+
 func BenchmarkLegacyColorizeRoad(b *testing.B) {
 	renderer := trueColorRenderer()
 	opts := Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer}

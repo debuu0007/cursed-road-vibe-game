@@ -90,7 +90,7 @@ func TestHazardResolutionAndContestedRepair(t *testing.T) {
 	resolved := make(map[int]map[string]bool)
 	consumed := make(map[int]bool)
 	p := game.NewPlayer("p1", "alice")
-	resolveHazards(&p, []curse.Event{traffic}, resolved, consumed, 100, 10)
+	resolveHazards(&p, []curse.Event{traffic}, resolved, consumed, 50, 10)
 	if p.Damage != 46 {
 		t.Fatalf("traffic damage = %d, want 46", p.Damage)
 	}
@@ -113,7 +113,7 @@ func TestBoostedPlayerMeetsPersonalDistanceHazardEarlier(t *testing.T) {
 	consumed := make(map[int]bool)
 	boosted := game.NewPlayer("boosted", "boosted")
 	normal := game.NewPlayer("normal", "normal")
-	boosted.Distance, normal.Distance = 96.3, 96.3
+	boosted.Distance, normal.Distance = 48.3, 48.3
 	boosted.SpeedNudge = 1
 
 	advancePlayer(&boosted, timeline, resolved, consumed, 100, 1, 1)
@@ -123,6 +123,26 @@ func TestBoostedPlayerMeetsPersonalDistanceHazardEarlier(t *testing.T) {
 	}
 	if normal.Damage != 0 {
 		t.Fatalf("normal player met hazard too early at personal distance %.2f", normal.Distance)
+	}
+}
+
+func TestMovingTrafficUsesSamePositionForViewAndCollision(t *testing.T) {
+	event := curse.Event{ID: 1, Kind: curse.Traffic, Distance: 1000, Lane: 2, Length: 14}
+	far := trafficPosition(event.Distance, 925)
+	near := trafficPosition(event.Distance, 935)
+	if got := far - near; got != 16 {
+		t.Fatalf("traffic moved %.2fm for 10m player travel, want 16m", got)
+	}
+	views := activePlayerHazards([]curse.Event{event}, 935, map[int]bool{})
+	if len(views) != 1 || views[0].Distance != near || views[0].Warning {
+		t.Fatalf("unexpected moving traffic view: %#v", views)
+	}
+
+	player := game.NewPlayer("p1", "alice")
+	player.Distance = 950
+	resolveHazards(&player, []curse.Event{event}, make(map[int]map[string]bool), map[int]bool{}, player.Distance, 20)
+	if player.Damage != 46 {
+		t.Fatalf("traffic rendered at collision point but dealt %d damage", player.Damage)
 	}
 }
 

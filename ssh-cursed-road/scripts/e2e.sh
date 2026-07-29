@@ -5,7 +5,7 @@ PORT="${PORT:-22229}"
 SERVER_BIN="${SERVER_BIN:-./cursedroad}"
 STATE_DIR=".e2e/run-$$"
 SCORES_PATH="$STATE_DIR/scores.jsonl"
-export PORT SCORES_PATH
+export PORT SCORES_PATH STATE_DIR
 
 if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
   echo "test port $PORT is already in use" >&2
@@ -38,12 +38,12 @@ while ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; do
   sleep 0.1
 done
 
-expect <<'EXPECT'
+expect <<'EXPECT' >"$STATE_DIR/client.log"
 set timeout 12
 set port $env(PORT)
 set ssh_opts [list -tt -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR]
 stty rows 24 columns 80
-log_user 0
+log_user 1
 
 spawn ssh {*}$ssh_opts road@127.0.0.1
 set alice $spawn_id
@@ -87,12 +87,10 @@ expect -i $charlie "who dies today?"
 send -i $charlie "\003"
 expect -i $charlie eof
 
-# Reassert lane 4, where the fixed seed has traffic at 446m followed by a
-# lethal gap at 1,113m. Repeated input is safe because steering clamps at the
-# road edge.
+# Reassert lane 4, whose fixed-seed hazard sequence kills deterministically.
+# Repeated input is safe because steering clamps at the road edge.
 # This validates the real SSH death loop without a test-only server backdoor.
 send -i $alice "dddd"
-log_user 0
 set died 0
 for {set i 0} {$i < 400} {incr i} {
   after 150
@@ -132,11 +130,12 @@ expect -i $drain -re {SPD +[0-9]+ km/h}
 exec kill -TERM $env(SERVER_PID)
 expect -i $drain "ROAD CLOSED FOR REPAIRS"
 catch {expect -i $drain eof}
-log_user 1
 puts "E2E PASS: two SSH clients raced in one room and saw each other"
 puts "E2E PASS: death wall, spectator mode, respawn, and clean quit"
 puts "E2E PASS: global queue, per-IP rejection, and SIGTERM drain"
 EXPECT
+
+grep '^E2E PASS:' "$STATE_DIR/client.log"
 
 wait "$server_pid"
 server_pid=""

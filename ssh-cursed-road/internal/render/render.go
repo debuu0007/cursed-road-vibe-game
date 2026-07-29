@@ -38,6 +38,7 @@ const (
 	styleCarYellow
 	styleCarRed
 	styleCarDarkRed
+	styleCarHit
 	styleExplosion
 	styleClassCount
 )
@@ -72,6 +73,7 @@ func NewStyles(renderer *lipgloss.Renderer, tier ColorTier) *Styles {
 	styles.spans[styleCarYellow] = style().Bold(true).Foreground(tierColor(tier, "226", "#ffff00"))
 	styles.spans[styleCarRed] = style().Bold(true).Foreground(tierColor(tier, "196", "#ff0000"))
 	styles.spans[styleCarDarkRed] = style().Bold(true).Foreground(tierColor(tier, "88", "#870000"))
+	styles.spans[styleCarHit] = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "196", "#ff0000"))
 	styles.spans[styleExplosion] = styles.spans[styleHazardRed]
 	styles.header = style().Bold(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
 	styles.headerShock = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
@@ -332,7 +334,8 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 				hasSelf = true
 			}
 			if player.State == game.Exploding {
-				putStyled(canvas[pos.row], x-3, "*BOOM*", styleExplosion)
+				frame := explosionFrame(snapshot.Tick-player.DeathTick, opts.Mono || opts.Tier == Mono)
+				putStyled(canvas[pos.row], x-len([]rune(frame))/2, frame, styleExplosion)
 			}
 		}
 		if len(players) > 1 {
@@ -348,9 +351,16 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 					break
 				}
 				carStyle := styleForDamage(player.Damage)
-				putStyled(canvas[pos.row], x-2, "▄██▄", carStyle)
+				if player.Hit {
+					carStyle = styleCarHit
+				}
+				top, bottom := "▄██▄", "▀██▀"
+				if player.Hit && (opts.Mono || opts.Tier == Mono) {
+					top, bottom = "████", "▓██▓"
+				}
+				putStyled(canvas[pos.row], x-2, top, carStyle)
 				if pos.row+1 < height {
-					putStyled(canvas[pos.row+1], x-2, "▀██▀", carStyle)
+					putStyled(canvas[pos.row+1], x-2, bottom, carStyle)
 				}
 				break
 			}
@@ -403,6 +413,14 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		}
 	}
 	return header + "\n" + strings.Join(rows, "\n") + "\n" + footer
+}
+
+func explosionFrame(age uint64, mono bool) string {
+	phase := min(int(age/10), 3)
+	if mono {
+		return []string{"*", "***", "* *", ". ."}[phase]
+	}
+	return []string{"✷", "✹✷✹", "* ✹ *", "·  ·  ·"}[phase]
 }
 
 func tierColor(tier ColorTier, ansi256, truecolor string) lipgloss.Color {

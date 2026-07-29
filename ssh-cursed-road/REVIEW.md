@@ -101,12 +101,18 @@ The gap renders as blank cells (`render.go:225–231`, glyph `"     "`), which o
 Ordered by fun-per-line-of-code.
 
 ### C1. Make wrong-way traffic actually move ★ the single best upgrade
+> ✅ fixed with shared 1.6× virtual position for rendering and collision (C1)
+
 Traffic (`▼▼`) currently sits at a fixed road position like a cone. It's supposed to be *oncoming*. Give the traffic event a virtual speed: when computing its row, use `row = carBaseRow - int((hazard.Distance - snapshot.Distance*1.6)/4)` style math (or track an offset that grows with ticks after it becomes visible) so it visibly rushes down the screen at you. Pair with the existing `!!!` warning strip. This transforms the hazard from "static obstacle #4" into the scariest thing on the road.
 
 ### C2. Hit feedback flash
+> ✅ fixed with authoritative three-tick reverse-red car flash (C2)
+
 On `ApplyDamage`, set `HitUntil = tick + 3` and render the car in reverse-video/red for those ticks. Right now damage is only a number changing in the header — the moment of impact needs to *feel* like impact. (Field: add to `Player` + `PlayerView`, one style branch in the car render.)
 
 ### C3. Explosion animation instead of static `*BOOM*`
+> ✅ fixed with four-phase Unicode and mono explosion frames (C3)
+
 The 2-second death freeze shows one static string. Cycle frames by `tick - DeathTick`:
 `✷` → `✹✷✹` → `* ✹ *` → `·  ·  ·` (mono: `*` → `***` → `* *` → `. .`). Dying is content — make the clip-worthy frame.
 
