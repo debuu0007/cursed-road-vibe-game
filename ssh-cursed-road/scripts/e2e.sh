@@ -56,7 +56,10 @@ send -i $alice "alice\r"
 after 300
 send -i $alice " "
 expect -i $alice -re {SPD +[0-9]+ km/h}
-send -i $alice "dddd"
+for {set i 0} {$i < 4} {incr i} {
+  send -i $alice "d"
+  after 60
+}
 after 250
 
 spawn ssh {*}$ssh_opts road@127.0.0.1
@@ -97,7 +100,12 @@ expect -i $charlie eof
 # Reassert lane 4, whose fixed-seed hazard sequence kills deterministically.
 # Repeated input is safe because steering clamps at the road edge.
 # This validates the real SSH death loop without a test-only server backdoor.
-send -i $alice "dddd"
+for {set i 0} {$i < 4} {incr i} {
+  send -i $alice "d"
+  after 60
+}
+send -i $alice "w"
+after 100
 set died 0
 for {set i 0} {$i < 400} {incr i} {
   after 150
