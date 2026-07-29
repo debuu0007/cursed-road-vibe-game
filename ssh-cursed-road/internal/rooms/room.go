@@ -132,6 +132,7 @@ func (r *Room) run(ctx context.Context) {
 	var tick uint64
 	var nextID uint64
 	var shockUntil uint64
+	var timelineCursor int
 	emptySince := time.Now()
 
 	for {
@@ -156,11 +157,8 @@ func (r *Room) run(ctx context.Context) {
 				if sub, ok := players[msg.playerID]; ok {
 					if sub.player.State == game.Racing && !sub.player.ScoreRecorded && r.scores != nil {
 						sub.player.Cause = "LEFT THE ROAD"
-						if _, err := r.scores.Record(sub.player.Name, sub.player.Distance, sub.player.Damage, sub.player.Cause); err != nil {
-							slog.Error("record disconnect score", "error", err, "player", sub.player.Name)
-						} else {
-							sub.player.ScoreRecorded = true
-						}
+						r.scores.Record(sub.player.Name, sub.player.Distance, sub.player.Damage, sub.player.Cause)
+						sub.player.ScoreRecorded = true
 					}
 					delete(players, msg.playerID)
 					close(sub.frames)
@@ -185,16 +183,7 @@ func (r *Room) run(ctx context.Context) {
 			}
 			distance += game.BaseSpeed(distance) * speedMultiplier / 3.6 / TickRate
 			hazards, shockWarning := activeHazards(timeline, distance, consumed)
-			for _, event := range timeline {
-				if event.Distance > distance {
-					break
-				}
-				if event.Kind == curse.Shock && !consumed[event.ID] {
-					shockUntil = tick + 4*TickRate
-					shock = true
-					consumed[event.ID] = true
-				}
-			}
+			timelineCursor, shockUntil, shock = advanceTimeline(timeline, timelineCursor, distance, consumed, tick, shockUntil)
 			ids := make([]string, 0, len(players))
 			for id := range players {
 				ids = append(ids, id)
@@ -210,11 +199,8 @@ func (r *Room) run(ctx context.Context) {
 					p.State = game.Spectating
 				}
 				if p.State != game.Racing && !p.ScoreRecorded && r.scores != nil {
-					if _, err := r.scores.Record(p.Name, p.Distance, p.Damage, p.Cause); err != nil {
-						slog.Error("record death score", "error", err, "player", p.Name)
-					} else {
-						p.ScoreRecorded = true
-					}
+					r.scores.Record(p.Name, p.Distance, p.Damage, p.Cause)
+					p.ScoreRecorded = true
 				}
 			}
 			views := make([]game.PlayerView, 0, len(players))
@@ -238,6 +224,20 @@ func (r *Room) run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func advanceTimeline(timeline []curse.Event, cursor int, distance float64, consumed map[int]bool, tick, shockUntil uint64) (int, uint64, bool) {
+	shock := tick < shockUntil
+	for cursor < len(timeline) && timeline[cursor].Distance <= distance {
+		event := timeline[cursor]
+		if event.Kind == curse.Shock && !consumed[event.ID] {
+			shockUntil = tick + 4*TickRate
+			shock = true
+			consumed[event.ID] = true
+		}
+		cursor++
+	}
+	return cursor, shockUntil, shock
 }
 
 func applyInput(sub *subscriber, input game.Input, tick uint64) {

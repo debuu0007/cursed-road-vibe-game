@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,6 +18,71 @@ func TestPublishLatestDropsOldSnapshot(t *testing.T) {
 	if got := (<-frames).Tick; got != 2 {
 		t.Fatalf("got tick %d, want latest tick 2", got)
 	}
+}
+
+func TestTimelineCursorMatchesFullScanOnFixedSeed(t *testing.T) {
+	timeline := curse.Generate(DefaultWorldSeed, 20_000)
+	cursorConsumed := make(map[int]bool)
+	legacyConsumed := make(map[int]bool)
+	var cursor int
+	var cursorShockUntil, legacyShockUntil uint64
+	for tick, distance := uint64(1), 0.0; distance < 20_000; tick, distance = tick+1, distance+7.25 {
+		var cursorShock bool
+		cursor, cursorShockUntil, cursorShock = advanceTimeline(timeline, cursor, distance, cursorConsumed, tick, cursorShockUntil)
+		var legacyShock bool
+		legacyShockUntil, legacyShock = legacyFullShockScan(timeline, distance, legacyConsumed, tick, legacyShockUntil)
+		if cursorShock != legacyShock || cursorShockUntil != legacyShockUntil {
+			t.Fatalf("shock mismatch at %.2fm: cursor=%v/%d legacy=%v/%d", distance, cursorShock, cursorShockUntil, legacyShock, legacyShockUntil)
+		}
+		gotHazards, gotWarning := activeHazards(timeline, distance, cursorConsumed)
+		wantHazards, wantWarning := legacyFullActiveHazards(timeline, distance, cursorConsumed)
+		if !reflect.DeepEqual(gotHazards, wantHazards) || gotWarning != wantWarning {
+			t.Fatalf("hazard mismatch at %.2fm", distance)
+		}
+	}
+}
+
+func legacyFullShockScan(timeline []curse.Event, distance float64, consumed map[int]bool, tick, shockUntil uint64) (uint64, bool) {
+	shock := tick < shockUntil
+	for _, event := range timeline {
+		if event.Distance > distance {
+			break
+		}
+		if event.Kind == curse.Shock && !consumed[event.ID] {
+			shockUntil = tick + 4*TickRate
+			shock = true
+			consumed[event.ID] = true
+		}
+	}
+	return shockUntil, shock
+}
+
+func legacyFullActiveHazards(timeline []curse.Event, distance float64, consumed map[int]bool) ([]game.HazardView, bool) {
+	hazards := make([]game.HazardView, 0, 8)
+	shockWarning := false
+	for _, event := range timeline {
+		if event.Distance < distance-130 {
+			continue
+		}
+		if event.Distance > distance+125 {
+			break
+		}
+		if distance > event.Distance+event.Length+8 {
+			continue
+		}
+		if event.Kind == curse.Shock && distance >= event.WarningDistance && distance < event.Distance {
+			shockWarning = true
+		}
+		if event.Distance >= distance-8 && event.Distance <= distance+90 {
+			hazards = append(hazards, game.HazardView{
+				ID: event.ID, Kind: string(event.Kind), Distance: event.Distance,
+				Lane: event.Lane, Length: event.Length,
+				Warning:  distance >= event.WarningDistance && distance < event.Distance,
+				Consumed: consumed[event.ID],
+			})
+		}
+	}
+	return hazards, shockWarning
 }
 
 func TestHazardResolutionAndContestedRepair(t *testing.T) {

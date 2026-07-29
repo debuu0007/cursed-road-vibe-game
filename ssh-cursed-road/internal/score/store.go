@@ -39,6 +39,7 @@ type Store struct {
 	done      chan struct{}
 	closed    atomic.Bool
 	closeOnce sync.Once
+	writeHook func()
 }
 
 type recordRequest struct {
@@ -46,12 +47,6 @@ type recordRequest struct {
 	distance float64
 	damage   int
 	cause    string
-	reply    chan recordResult
-}
-
-type recordResult struct {
-	entry Entry
-	err   error
 }
 
 func Open(path string) (*Store, error) {
@@ -64,7 +59,7 @@ func Open(path string) (*Store, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	store.records = make(chan recordRequest)
+	store.records = make(chan recordRequest, 256)
 	store.closing = make(chan chan error)
 	store.done = make(chan struct{})
 	go store.run()
@@ -92,29 +87,62 @@ func (s *Store) load(reader io.ReadSeeker) error {
 	return err
 }
 
-func (s *Store) Record(name string, distance float64, damage int, cause string) (Entry, error) {
+func (s *Store) Record(name string, distance float64, damage int, cause string) bool {
 	if s.closed.Load() {
-		return Entry{}, fmt.Errorf("scoreboard is closed")
+		return false
 	}
-	reply := make(chan recordResult, 1)
 	select {
-	case s.records <- recordRequest{name: name, distance: distance, damage: damage, cause: cause, reply: reply}:
+	case s.records <- recordRequest{name: name, distance: distance, damage: damage, cause: cause}:
+		return true
 	case <-s.done:
-		return Entry{}, fmt.Errorf("scoreboard is closed")
+		return false
+	default:
+		slog.Warn("score queue full; dropping record", "name", name, "distance", int(distance), "cause", cause)
+		return false
 	}
-	result := <-reply
-	return result.entry, result.err
 }
 
 func (s *Store) run() {
 	defer close(s.done)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	dirty := false
+	var asyncErr error
 	for {
 		select {
 		case request := <-s.records:
-			entry, err := s.write(request.name, request.distance, request.damage, request.cause)
-			request.reply <- recordResult{entry: entry, err: err}
+			if _, err := s.write(request.name, request.distance, request.damage, request.cause); err != nil {
+				asyncErr = err
+				slog.Error("persist score", "error", err, "name", request.name)
+			} else {
+				dirty = true
+			}
+		case <-ticker.C:
+			if dirty {
+				if err := s.file.Sync(); err != nil {
+					asyncErr = err
+					slog.Error("sync scoreboard", "error", err)
+				} else {
+					dirty = false
+				}
+			}
 		case reply := <-s.closing:
-			err := s.file.Sync()
+			for {
+				select {
+				case request := <-s.records:
+					if _, err := s.write(request.name, request.distance, request.damage, request.cause); err != nil {
+						asyncErr = err
+						slog.Error("persist score while closing", "error", err, "name", request.name)
+					}
+				default:
+					goto drained
+				}
+			}
+		drained:
+			err := asyncErr
+			if syncErr := s.file.Sync(); err == nil {
+				err = syncErr
+			}
 			if closeErr := s.file.Close(); err == nil {
 				err = closeErr
 			}
@@ -125,6 +153,9 @@ func (s *Store) run() {
 }
 
 func (s *Store) write(name string, distance float64, damage int, cause string) (Entry, error) {
+	if s.writeHook != nil {
+		s.writeHook()
+	}
 	entry := Entry{
 		Name: name, Distance: int(distance), Score: game.Score(distance, damage),
 		Status: game.SurvivalStatus(damage), Cause: cause, DiedAt: s.now().UTC(),
@@ -135,9 +166,6 @@ func (s *Store) write(name string, distance float64, damage int, cause string) (
 	}
 	if _, err := s.file.Write(append(data, '\n')); err != nil {
 		return Entry{}, fmt.Errorf("append score: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return Entry{}, fmt.Errorf("flush score: %w", err)
 	}
 	s.mu.Lock()
 	s.entries = append(s.entries, entry)

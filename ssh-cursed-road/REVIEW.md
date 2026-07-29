@@ -19,11 +19,15 @@ Reviewed at ~2,150 lines of Go. `go vet ./...` clean, all unit tests pass, `.git
 ## A. Latency & performance
 
 ### A1. Score writes block the room tick loop (biggest real latency risk)
+> ✅ fixed in bounded async score queue with one-second sync batching (A1)
+
 `internal/score/store.go:139` does `file.Sync()` (fsync) on every record, and records are written **synchronously from inside the room tick handler** (`internal/rooms/room.go:213` and `room.go:159`). A slow fsync (cheap VPS disk, busy moment) stalls the *entire room* — all 20 players hiccup on every death. Worst case: a pile-up where 5 players die on the same traffic event = 5 sequential fsyncs inside one 50ms tick budget.
 
 **Fix:** make `Record` fire-and-forget from the room's perspective — push the entry into the store's channel and return immediately (the store already has its own goroutine; drop the synchronous `reply` wait from the room path). Batch the fsync: sync at most once per second or on `Close`, not per entry. Losing one score line in a hard crash is acceptable; a frozen room is not.
 
 ### A2. Shock detection scans the timeline from the beginning every tick
+> ✅ fixed with monotonic timeline cursor and fixed-seed equivalence test (A2)
+
 `internal/rooms/room.go:188–197` iterates `timeline` from index 0 on every tick, skipping already-consumed events until `event.Distance > distance`. The 1,000,000m timeline holds ~9–11k events; late in a long run that's thousands of wasted iterations per tick, per room, 20×/s.
 
 **Fix:** keep a `timelineCursor int` in the room loop; advance it past events whose `Distance + Length + margin < distance`. Same applies to `resolveHazards` and `activeHazards` — they already use `sort.Search` (fine), but the shock loop is the raw scan.
