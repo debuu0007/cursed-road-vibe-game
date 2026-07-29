@@ -38,6 +38,7 @@ type deathWallDoneMsg struct{}
 type deathWallSkippableMsg struct{}
 type idleQuitMsg struct{}
 type roadClosedMsg struct{}
+type titleBlinkMsg struct{}
 type rejoinedMsg struct{ sub rooms.Subscription }
 
 var blockedNames = []string{"fuck", "shit", "cunt", "nigger", "nazi"}
@@ -67,13 +68,14 @@ type Model struct {
 	respawning         bool
 	reconnectMessage   string
 	deathWallSkippable bool
+	cursorOn           bool
 }
 
 func NewModel(manager *rooms.Manager, scores *score.Store, draining <-chan struct{}, renderer *lipgloss.Renderer) *Model {
 	tier := colorTier(renderer)
 	return &Model{
 		width: 80, height: 24, screen: nameScreen, colorTier: tier,
-		manager: manager, scores: scores, draining: draining, renderer: renderer,
+		manager: manager, scores: scores, draining: draining, renderer: renderer, cursorOn: true,
 		renderStyles: render.NewStyles(renderer, tier), lastInput: time.Now(),
 	}
 }
@@ -92,10 +94,14 @@ func colorTier(renderer *lipgloss.Renderer) render.ColorTier {
 	}
 }
 
-func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), waitForDrain(m.draining)) }
+func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), waitForDrain(m.draining), titleBlink()) }
 
 func tick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func titleBlink() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return titleBlinkMsg{} })
 }
 
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -206,6 +212,11 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = closedScreen
 		m.closedMessage = "ROAD CLOSED FOR REPAIRS\n\nreconnect shortly"
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return idleQuitMsg{} })
+	case titleBlinkMsg:
+		if m.screen == nameScreen {
+			m.cursorOn = !m.cursorOn
+			return m, titleBlink()
+		}
 	}
 	return m, nil
 }
@@ -248,25 +259,31 @@ func (m *Model) updateName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) View() string {
 	if m.screen == nameScreen {
-		card := "ssh cursed.road\n\nPICK A CURSE\n\n> THE ROAD\n  POTHOLE GAUNTLET — LOCKED · soon\n  SPEED SHOCK — LOCKED · soon\n\nThe road is not built for you.\n\nwho dies today? " + string(m.nameInput) + "█\n\nenter to race · ctrl+c to flee"
-		return center(m.width, m.height, card)
+		return render.Title(string(m.nameInput), m.cursorOn, m.renderOptions())
 	}
 	if m.screen == joinWallScreen {
-		return render.Wall(m.scores.Boards(), m.width, m.height, false, false)
+		return render.Wall(m.scores.Boards(), m.name, false, false, m.renderOptions())
 	}
 	if m.screen == deathWallScreen {
-		return render.Wall(m.scores.Boards(), m.width, m.height, true, m.deathWallSkippable)
+		return render.Wall(m.scores.Boards(), m.name, true, m.deathWallSkippable, m.renderOptions())
 	}
 	if m.screen == closedScreen {
-		return center(m.width, m.height, m.closedMessage)
+		return render.Card(m.closedMessage, m.renderOptions())
 	}
 	if m.screen == reconnectScreen {
-		return center(m.width, m.height, m.reconnectMessage)
+		return render.Card(m.reconnectMessage, m.renderOptions())
 	}
-	return render.Race(m.snapshot, m.sub.PlayerID, render.Options{
+	if m.snapshot.Tick == 0 {
+		return render.Card("ENTERING THE ROAD…", m.renderOptions())
+	}
+	return render.Race(m.snapshot, m.sub.PlayerID, m.renderOptions())
+}
+
+func (m *Model) renderOptions() render.Options {
+	return render.Options{
 		Width: m.width, Height: m.height, Tier: m.colorTier, Mono: m.mono,
 		Renderer: m.renderer, Styles: m.renderStyles,
-	})
+	}
 }
 
 func rejoinRoom(manager *rooms.Manager, name string) tea.Cmd {
@@ -349,18 +366,4 @@ func anonymousName() string {
 	b := []byte{0, 0}
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("anon_%02x%02x", b[0], b[1])
-}
-
-func center(width, height int, content string) string {
-	lines := strings.Split(content, "\n")
-	padTop := max(0, (height-len(lines))/2)
-	var result []string
-	for range padTop {
-		result = append(result, "")
-	}
-	for _, line := range lines {
-		padding := max(0, (width-len([]rune(line)))/2)
-		result = append(result, strings.Repeat(" ", padding)+line)
-	}
-	return strings.Join(result, "\n")
 }

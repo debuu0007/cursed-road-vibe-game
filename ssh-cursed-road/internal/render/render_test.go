@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"cursedroad/internal/game"
+	"cursedroad/internal/score"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -105,6 +106,129 @@ func TestGapHasVisibleCrumblingEdges(t *testing.T) {
 	if !strings.Contains(view, "▚") || !strings.Contains(view, "▞") {
 		t.Fatalf("gap crumbling edges missing:\n%s", view)
 	}
+}
+
+func TestSpeedEffectsAddStreaksSlipTrailAndJudder(t *testing.T) {
+	base := game.Snapshot{
+		Tick: 2, Shock: true,
+		Players: []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing, Slipstream: true}},
+	}
+	view := Race(base, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if !strings.Contains(view, "¦") || !strings.Contains(view, "^") {
+		t.Fatalf("speed streak or slipstream trail missing:\n%s", view)
+	}
+	normal := base
+	normal.Shock = false
+	normal.Players[0].Slipstream = false
+	normalView := Race(normal, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if lineContaining(view, "▄██▄") >= lineContaining(normalView, "▄██▄") {
+		t.Fatal("shock vertical judder did not shift the road upward")
+	}
+	if dashPhase(100, 110) == dashPhase(100, 260) {
+		t.Fatal("lane-dash phase is not speed-sensitive")
+	}
+}
+
+func TestColorFurnitureAndDamageBarUseCachedStyles(t *testing.T) {
+	renderer := trueColorRenderer()
+	styles := NewStyles(renderer, TrueColor)
+	snapshot := game.Snapshot{
+		Tick: 2, Shock: true,
+		Players: []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing, Damage: 50}},
+	}
+	view := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer, Styles: styles})
+	if !strings.Contains(view, styles.borderShock.Render("║")) {
+		t.Fatal("shock border did not use red border style")
+	}
+	hud := renderHUD("DMG ", "█████░░░░░", " 50", 24, 50, styles)
+	if !strings.Contains(hud, styles.spanPrefix[styleCarRed]) {
+		t.Fatal("damage bar did not use red threshold style")
+	}
+}
+
+func TestFogCrawlsHidesOtherCarsAndSpentRepairRemains(t *testing.T) {
+	snapshot := game.Snapshot{
+		Players: []game.PlayerView{
+			{ID: "self", Name: "alice", Lane: 2, State: game.Racing, Distance: 100},
+			{ID: "other", Name: "bob", Lane: 3, State: game.Racing, Distance: 100},
+		},
+		Hazards: []game.HazardView{
+			{ID: 1, Kind: "fog", Distance: 100, Lane: 2, Length: 45},
+			{ID: 2, Kind: "repair", Distance: 108, Lane: 1, Length: 14, Consumed: true},
+		},
+	}
+	first := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	snapshot.Tick = 3
+	second := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if first == second {
+		t.Fatal("fog texture did not crawl across ticks")
+	}
+	if strings.Contains(first, "bob") || strings.Contains(first, "◇") {
+		t.Fatal("other player remained visible inside fog")
+	}
+	if !strings.Contains(first, "[ ]") {
+		t.Fatalf("consumed repair pad did not remain as [ ]:\n%s", first)
+	}
+}
+
+func TestOtherPlayerNameIsClippedToLane(t *testing.T) {
+	snapshot := game.Snapshot{Players: []game.PlayerView{
+		{ID: "self", Name: "alice", Lane: 4, State: game.Racing},
+		{ID: "other", Name: "twelveletters", Lane: 0, State: game.Racing},
+	}}
+	view := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if strings.Contains(view, "twelveletters") {
+		t.Fatal("other player's name escaped its lane")
+	}
+}
+
+func TestTitleCardAndPersonalizedWallHierarchy(t *testing.T) {
+	renderer := trueColorRenderer()
+	styles := NewStyles(renderer, TrueColor)
+	opts := Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer, Styles: styles}
+	title := Title("ali", true, opts)
+	for _, want := range []string{"▄██▄", "CURSED ROAD", "> THE ROAD", "LOCKED", "ali█"} {
+		if !strings.Contains(title, want) {
+			t.Fatalf("title missing %q", want)
+		}
+	}
+	boards := score.Boards{
+		Today:   []score.Entry{{Name: "winner", Distance: 500, Score: 600}, {Name: "alice", Distance: 400, Score: 500}},
+		AllTime: []score.Entry{{Name: "alice", Distance: 400, Score: 500}},
+	}
+	wallOpts := opts
+	wallOpts.Height = 16
+	wall := Wall(boards, "alice", true, true, wallOpts)
+	if strings.Count(wall, "\n")+1 != 16 || !strings.Contains(wall, "┌") || !strings.Contains(wall, "┘") {
+		t.Fatalf("wall frame does not fit 80x16:\n%s", wall)
+	}
+	currentPrefix, _ := compiledStyle(styles.current)
+	if !strings.Contains(wall, "alice") || !strings.Contains(wall, currentPrefix) {
+		t.Fatal("current player row was not bold/reverse highlighted")
+	}
+	if !strings.Contains(wall, "share: asciinema") || !strings.Contains(wall, "any key: spectate now") {
+		t.Fatal("short wall lost its protected footer")
+	}
+}
+
+func TestEngineSpeedJittersAcrossTicks(t *testing.T) {
+	snapshot := game.Snapshot{Players: []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing}}}
+	snapshot.Tick = 0
+	first := strings.Split(Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true}), "\n")[0]
+	snapshot.Tick = 2
+	second := strings.Split(Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true}), "\n")[0]
+	if first == second {
+		t.Fatal("engine speed did not jitter across ticks")
+	}
+}
+
+func lineContaining(view, needle string) int {
+	for i, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 func BenchmarkLegacyColorizeRoad(b *testing.B) {

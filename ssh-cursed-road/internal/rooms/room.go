@@ -317,7 +317,11 @@ func activeHazards(timeline []curse.Event, distance float64, consumed map[int]bo
 		if event.Kind == curse.Shock && distance >= event.WarningDistance && distance < event.Distance {
 			shockWarning = true
 		}
-		if event.Distance >= distance-8 && event.Distance <= distance+90 {
+		behind := 8.0
+		if event.Kind == curse.Repair && consumed[event.ID] {
+			behind = 22
+		}
+		if event.Distance >= distance-behind && event.Distance <= distance+90 {
 			hazards = append(hazards, game.HazardView{
 				ID: event.ID, Kind: string(event.Kind), Distance: event.Distance,
 				Lane: event.Lane, Length: event.Length,

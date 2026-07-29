@@ -2,6 +2,7 @@ package session
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,27 @@ func TestDeathWallBecomesSkippableAfterTwoSeconds(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if m.screen != spectatorScreen {
 		t.Fatalf("screen = %v, want spectator", m.screen)
+	}
+}
+
+func TestTitleCursorBlinksOnlyOnNameScreen(t *testing.T) {
+	m := &Model{screen: nameScreen, cursorOn: true}
+	_, cmd := m.Update(titleBlinkMsg{})
+	if m.cursorOn || cmd == nil {
+		t.Fatal("name-screen cursor did not toggle and rearm")
+	}
+	m.screen = racingScreen
+	_, cmd = m.Update(titleBlinkMsg{})
+	if cmd != nil {
+		t.Fatal("title blink rearmed outside the name screen")
+	}
+}
+
+func TestFirstRaceFrameKeepsEnteringCard(t *testing.T) {
+	m := &Model{width: 80, height: 24, screen: racingScreen, colorTier: render.Mono, mono: true}
+	view := m.View()
+	if !strings.Contains(view, "ENTERING THE ROAD") || strings.Contains(view, "SPD") {
+		t.Fatalf("zero-snapshot race view was not held on entering card:\n%s", view)
 	}
 }
 

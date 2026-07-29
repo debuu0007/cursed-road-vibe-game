@@ -133,31 +133,47 @@ The 2-second death freeze shows one static string. Cycle frames by `tick - Death
 `✷` → `✹✷✹` → `* ✹ *` → `·  ·  ·` (mono: `*` → `***` → `* *` → `. .`). Dying is content — make the clip-worthy frame.
 
 ### C4. Speed needs to be *felt*, not just printed
+> ✅ fixed with speed-scaled dashes, deterministic edge streaks, and slipstream trail (C4)
+
 - Tie lane-dash cadence to speed: the `·` dashes currently alternate on `distance/3` regardless of pace. Use `distance/2` at low speed → `distance/5` spacing at high speed so the road visibly streams faster.
 - During SHOCK and slipstream, draw brief streak chars `¦` in empty cells near the road edges (seeded by `(x*7+y*13+tick)%N` so it shimmers).
 - Slipstream: green `^` trail in the 1–2 cells behind your car while active.
 
 ### C5. Shock should shake more than 1 column
+> ✅ fixed with horizontal/vertical judder and red SHOCK borders (C5)
+
 `render.go:289–291` jitters `leftPad` by +1 on even ticks. Add vertical judder (drop the top canvas row on alternating ticks so the whole road jumps), and during shock render the `║` borders in red. The current header reverse-flash every 10 ticks is good — keep it.
 
 ### C6. Color the road furniture
+> ✅ fixed with yellow/red borders, threshold damage bar, and clipped cyan names (C6)
+
 - `║` borders: dim yellow (`226`-family) — echoes the browser game's yellow edge lines; instantly reads "road", and gives mono users nothing to miss since borders are already glyphs.
 - Damage bar: green → yellow → red as it fills (same thresholds as the car tint, `render.go:347–354`), instead of always-white blocks.
 - Other players' *names* are uncolored — only their `◇` is cyan (`render.go:346`). Style the name with the same faint cyan, and clip it to the lane width so long names don't overlap the next lane.
 
 ### C7. Animate the fog
+> ✅ fixed with three-tick crawl and remote-car occlusion (C7)
+
 `render.go:233–239` picks `░▒▓` by `(x+y)%3` — a frozen texture. Use `(x+y+int(snapshot.Tick/3))%3` so the fog crawls. Three characters, huge atmosphere gain. (Also consider hiding *player* cars inside fog rows — currently only hazards are hidden, so cars ghost through fog visibly.)
 
 ### C8. Consumed repair pads should show as sniped, not vanish
+> ✅ fixed with retained faint `[ ]` spent-pad rendering (C8)
+
 When someone grabs `[+]` it disappears (`render.go:201`). Render consumed pads as a dim `[ ]` instead — the "someone got here first" rivalry is the whole point of the mechanic, so show the evidence.
 
 ### C9. Title screen deserves the bit
+> ✅ fixed with car logo, styled modes, and name-screen-only 500ms cursor blink (C9)
+
 The name screen is centered plain text. Cheap upgrades: a small ASCII logo (`CURSED ROAD` in 3-row block letters or even just the car glyph ▄██▄ above the title), the selected mode `> THE ROAD` in bold red, locked modes in faint, and a blinking `█` cursor (toggle on tick — the 5s tick from A4 is too slow for this; blink only while on the name screen with a 500ms tick). First impression is the screenshot.
 
 ### C10. Wall of death hierarchy
+> ✅ fixed with frame, ranked hierarchy, personalized reverse row, and protected footer (C10)
+
 `render.Wall` is uniform text. Give it: box-drawing frame around the whole board, ranks 1–3 in gold/silver/red-ish (`220`/`250`/`208`), **your own row bold/reverse** (pass the player name in — seeing yourself on the board is the retention hook), and the `share: asciinema…` line faint. Also guard the truncation at `render.go:50–52`: on short terminals the share line and "spectating shortly…" are currently the first things cut — compute `remaining` so the footer always survives and trim all-time entries instead.
 
 ### C11. Small touches
+> ✅ fixed with engine wobble, shared cards, and guarded first race frame (C11)
+
 - Engine wobble: `SPD` jitter ±2 km/h per tick makes the number feel alive (`DisplaySpeed` + `tick%3-1`).
 - Queue and closed screens: run them through the same centered, faint-styled card helper as the title screen so every non-race screen shares one look.
 - First racing frame renders an empty road before the first snapshot arrives (`model.go:231` with zero-value snapshot) — keep showing `ENTERING THE ROAD…` until `snapshot.Tick > 0`.

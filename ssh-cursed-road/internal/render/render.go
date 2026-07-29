@@ -30,9 +30,11 @@ type styleClass uint8
 
 const (
 	styleRoad styleClass = iota
+	styleHUD
 	styleHazardRed
 	styleOil
 	styleBenefit
+	styleShockStreak
 	styleOtherPlayer
 	styleCarWhite
 	styleCarYellow
@@ -54,6 +56,15 @@ type Styles struct {
 	headerShock lipgloss.Style
 	footer      lipgloss.Style
 	footerShock lipgloss.Style
+	border      lipgloss.Style
+	borderShock lipgloss.Style
+	title       lipgloss.Style
+	selected    lipgloss.Style
+	locked      lipgloss.Style
+	faint       lipgloss.Style
+	card        lipgloss.Style
+	ranks       [3]lipgloss.Style
+	current     lipgloss.Style
 }
 
 func NewStyles(renderer *lipgloss.Renderer, tier ColorTier) *Styles {
@@ -65,9 +76,11 @@ func NewStyles(renderer *lipgloss.Renderer, tier ColorTier) *Styles {
 	}
 	styles := &Styles{}
 	styles.spans[styleRoad] = style().Foreground(tierColor(tier, "240", "#585858"))
+	styles.spans[styleHUD] = style().Bold(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
 	styles.spans[styleHazardRed] = style().Bold(true).Foreground(tierColor(tier, "196", "#ff3030"))
 	styles.spans[styleOil] = style().Bold(true).Foreground(tierColor(tier, "214", "#ffaf00"))
 	styles.spans[styleBenefit] = style().Bold(true).Foreground(tierColor(tier, "48", "#00ff87"))
+	styles.spans[styleShockStreak] = style().Bold(true).Foreground(tierColor(tier, "203", "#ff5f5f"))
 	styles.spans[styleOtherPlayer] = style().Faint(true).Foreground(tierColor(tier, "44", "#00d7d7"))
 	styles.spans[styleCarWhite] = style().Bold(true).Foreground(tierColor(tier, "255", "#ffffff"))
 	styles.spans[styleCarYellow] = style().Bold(true).Foreground(tierColor(tier, "226", "#ffff00"))
@@ -79,6 +92,17 @@ func NewStyles(renderer *lipgloss.Renderer, tier ColorTier) *Styles {
 	styles.headerShock = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
 	styles.footer = style().Foreground(tierColor(tier, "203", "#ff5f5f"))
 	styles.footerShock = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "203", "#ff5f5f"))
+	styles.border = style().Faint(true).Foreground(tierColor(tier, "220", "#ffd700"))
+	styles.borderShock = style().Bold(true).Foreground(tierColor(tier, "196", "#ff3030"))
+	styles.title = style().Bold(true).Foreground(tierColor(tier, "203", "#ff5f5f"))
+	styles.selected = style().Bold(true).Foreground(tierColor(tier, "196", "#ff3030"))
+	styles.locked = style().Faint(true).Foreground(tierColor(tier, "244", "#808080"))
+	styles.faint = style().Faint(true).Foreground(tierColor(tier, "244", "#808080"))
+	styles.card = style().Faint(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
+	styles.ranks[0] = style().Bold(true).Foreground(tierColor(tier, "220", "#ffd700"))
+	styles.ranks[1] = style().Bold(true).Foreground(tierColor(tier, "250", "#bcbcbc"))
+	styles.ranks[2] = style().Bold(true).Foreground(tierColor(tier, "208", "#ff8700"))
+	styles.current = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "203", "#ff5f5f"))
 	for class := styleRoad; class < styleClassCount; class++ {
 		styles.spanPrefix[class], styles.spanSuffix[class] = compiledStyle(styles.spans[class])
 	}
@@ -100,54 +124,163 @@ type styledCell struct {
 	style styleClass
 }
 
-func Wall(boards score.Boards, width, height int, death, skippable bool) string {
+func Title(name string, cursor bool, opts Options) string {
+	styles := opts.Styles
+	if styles == nil {
+		styles = NewStyles(opts.Renderer, opts.Tier)
+	}
+	cursorGlyph := " "
+	if cursor {
+		cursorGlyph = "█"
+	}
+	logo := "▄██▄\n▀██▀\nCURSED ROAD"
+	selected := "> THE ROAD"
+	locked := "POTHOLE GAUNTLET — LOCKED · soon\nSPEED SHOCK — LOCKED · soon"
+	prompt := "The road is not built for you.\n\nwho dies today? " + name + cursorGlyph + "\n\nenter to race · ctrl+c to flee"
+	if !opts.Mono && opts.Tier != Mono {
+		logo = styles.title.Render(logo)
+		selected = styles.selected.Render(selected)
+		locked = styles.locked.Render(locked)
+		prompt = styles.faint.Render(prompt)
+	}
+	content := logo + "\n\nPICK A CURSE\n\n" + selected + "\n" + locked + "\n\n" + prompt
+	return lipgloss.Place(opts.Width, opts.Height, lipgloss.Center, lipgloss.Center, content)
+}
+
+func Card(content string, opts Options) string {
+	styles := opts.Styles
+	if styles == nil {
+		styles = NewStyles(opts.Renderer, opts.Tier)
+	}
+	lines := strings.Split(content, "\n")
+	innerWidth := 0
+	for _, line := range lines {
+		innerWidth = max(innerWidth, len([]rune(line)))
+	}
+	innerWidth = min(max(innerWidth+4, 28), max(1, opts.Width-4))
+	card := []string{"╭" + strings.Repeat("─", innerWidth) + "╮"}
+	for _, line := range lines {
+		line = fit(line, innerWidth-2)
+		card = append(card, "│ "+line+strings.Repeat(" ", max(0, innerWidth-2-len([]rune(line))))+" │")
+	}
+	card = append(card, "╰"+strings.Repeat("─", innerWidth)+"╯")
+	result := strings.Join(card, "\n")
+	if !opts.Mono && opts.Tier != Mono {
+		result = styles.card.Render(result)
+	}
+	return lipgloss.Place(opts.Width, opts.Height, lipgloss.Center, lipgloss.Center, result)
+}
+
+type wallLine struct {
+	text    string
+	rank    int
+	current bool
+	kind    string
+}
+
+func Wall(boards score.Boards, currentName string, death, skippable bool, opts Options) string {
+	width, height := opts.Width, opts.Height
+	if width < 4 || height < 4 {
+		return fit("WALL OF DEATH", width)
+	}
+	styles := opts.Styles
+	if styles == nil {
+		styles = NewStyles(opts.Renderer, opts.Tier)
+	}
 	title := "WALL OF DEATH"
 	if death {
 		title = "YOU FLATLINED — WALL OF DEATH"
 	}
-	lines := []string{title, "THE ROAD IS NOT BUILT FOR YOU", "", "TODAY'S TOP 10", " #  NAME          DIST     SCORE  STATUS / CAUSE"}
-	lines = append(lines, scoreLines(boards.Today, 10)...)
-	lines = append(lines, "", "ALL-TIME TOP 50", " #  NAME          DIST     SCORE  STATUS / CAUSE")
-	remaining := height - len(lines) - 3
-	if remaining < 1 {
-		remaining = 1
-	}
-	lines = append(lines, scoreLines(boards.AllTime, remaining)...)
-	lines = append(lines, "", "share: asciinema + \"ssh cursed.road\"")
+	innerHeight := height - 2
+	footer := []wallLine{{text: "share: asciinema + \"ssh cursed.road\"", kind: "faint"}}
 	if death {
 		if skippable {
-			lines = append(lines, "any key: spectate now")
+			footer = append(footer, wallLine{text: "any key: spectate now", kind: "faint"})
 		} else {
-			lines = append(lines, "spectating shortly…")
+			footer = append(footer, wallLine{text: "spectating shortly…", kind: "faint"})
 		}
 	} else {
-		lines = append(lines, "any key skips · THE ROAD is the only curse unlocked")
+		footer = append(footer, wallLine{text: "any key skips · THE ROAD is the only curse unlocked", kind: "faint"})
 	}
-	for i, line := range lines {
-		lines[i] = fit(line, width)
+	// Always reserve the frame, both section headings, one all-time row, and
+	// both footer lines. Today's board receives the remaining space first.
+	availableToday := max(1, innerHeight-11)
+	today := scoreWallLines(boards.Today, min(10, availableToday), currentName)
+	lines := []wallLine{
+		{text: title, kind: "title"}, {text: "THE ROAD IS NOT BUILT FOR YOU", kind: "faint"}, {},
+		{text: "TODAY'S TOP 10", kind: "heading"}, {text: " #  NAME          DIST     SCORE  STATUS / CAUSE", kind: "faint"},
 	}
-	if len(lines) > height {
-		lines = lines[:height]
+	lines = append(lines, today...)
+	lines = append(lines, wallLine{}, wallLine{text: "ALL-TIME TOP 50", kind: "heading"}, wallLine{text: " #  NAME          DIST     SCORE  STATUS / CAUSE", kind: "faint"})
+	availableAll := max(1, innerHeight-len(lines)-len(footer))
+	lines = append(lines, scoreWallLines(boards.AllTime, availableAll, currentName)...)
+	if len(lines)+len(footer) > innerHeight {
+		lines = lines[:max(0, innerHeight-len(footer))]
 	}
-	return strings.Join(lines, "\n")
+	for len(lines)+len(footer) < innerHeight {
+		lines = append(lines, wallLine{})
+	}
+	lines = append(lines, footer...)
+
+	innerWidth := width - 2
+	borderStyle := styles.border
+	top := "┌" + strings.Repeat("─", innerWidth) + "┐"
+	bottom := "└" + strings.Repeat("─", innerWidth) + "┘"
+	if !opts.Mono && opts.Tier != Mono {
+		top, bottom = borderStyle.Render(top), borderStyle.Render(bottom)
+	}
+	result := make([]string, 0, height)
+	result = append(result, top)
+	for _, line := range lines {
+		text := fit(line.text, innerWidth)
+		text += strings.Repeat(" ", max(0, innerWidth-len([]rune(text))))
+		if !opts.Mono && opts.Tier != Mono {
+			text = styleWallText(text, line, styles)
+			result = append(result, borderStyle.Render("│")+text+borderStyle.Render("│"))
+		} else {
+			result = append(result, "│"+text+"│")
+		}
+	}
+	result = append(result, bottom)
+	return strings.Join(result, "\n")
 }
 
-func scoreLines(entries []score.Entry, maximum int) []string {
+func scoreWallLines(entries []score.Entry, maximum int, currentName string) []wallLine {
 	if len(entries) == 0 {
-		return []string{" —  no bodies yet"}
+		return []wallLine{{text: " —  no bodies yet", kind: "faint"}}
 	}
 	if len(entries) > maximum {
 		entries = entries[:maximum]
 	}
-	lines := make([]string, 0, len(entries))
+	lines := make([]wallLine, 0, len(entries))
 	for i, entry := range entries {
 		cause := fmt.Sprintf("%s · %s at %dm", entry.Status, entry.Cause, entry.Distance)
 		if entry.Status == "Flatlined" {
 			cause = fmt.Sprintf("%s · FLATLINED by %s at %dm", entry.Status, entry.Cause, entry.Distance)
 		}
-		lines = append(lines, fmt.Sprintf("%2d  %-12s %6dm  %6d  %s", i+1, entry.Name, entry.Distance, entry.Score, cause))
+		lines = append(lines, wallLine{
+			text: fmt.Sprintf("%2d  %-12s %6dm  %6d  %s", i+1, entry.Name, entry.Distance, entry.Score, cause),
+			rank: i + 1, current: entry.Name == currentName,
+		})
 	}
 	return lines
+}
+
+func styleWallText(text string, line wallLine, styles *Styles) string {
+	switch {
+	case line.current:
+		return styles.current.Render(text)
+	case line.rank >= 1 && line.rank <= 3:
+		return styles.ranks[line.rank-1].Render(text)
+	case line.kind == "title":
+		return styles.title.Render(text)
+	case line.kind == "heading":
+		return styles.selected.Render(text)
+	case line.kind == "faint":
+		return styles.faint.Render(text)
+	default:
+		return styles.card.Render(text)
+	}
 }
 
 func TooSmall(width, height int) bool { return width < 60 || height < 16 }
@@ -228,6 +361,10 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 	if TooSmall(opts.Width, opts.Height) {
 		return SmallCard(opts.Width, opts.Height)
 	}
+	styles := opts.Styles
+	if styles == nil {
+		styles = NewStyles(opts.Renderer, opts.Tier)
+	}
 	var self game.PlayerView
 	racingCount, ghostCount := 0, 0
 	for _, player := range snapshot.Players {
@@ -251,9 +388,11 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 	if self.Slipstream {
 		displaySpeed = displaySpeed * 3 / 2
 	}
-	header := pad(fmt.Sprintf(" SPD %3d  DIST %5.0fm  DMG %s %3d  %-18s %2d racing · %d ghosts",
-		displaySpeed, self.Distance,
-		DamageBar(self.Damage), self.Damage, game.SurvivalStatus(self.Damage), racingCount, ghostCount), opts.Width)
+	displaySpeed += (int(snapshot.Tick%3) - 1) * 2
+	headerBefore := fmt.Sprintf(" SPD %3d  DIST %5.0fm  DMG ", displaySpeed, self.Distance)
+	headerBar := DamageBar(self.Damage)
+	headerAfter := fmt.Sprintf(" %3d  %-16s %2d racing · %d ghosts", self.Damage, game.SurvivalStatus(self.Damage), racingCount, ghostCount)
+	header := pad(headerBefore+headerBar+headerAfter, opts.Width)
 
 	canvas := make([][]styledCell, height)
 	for y := range canvas {
@@ -263,8 +402,19 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		}
 		for lane := 1; lane < game.LaneCount; lane++ {
 			x := lane * laneWidth
-			if (y+int(self.Distance/3))%2 == 0 && x < insideWidth {
+			if (y+dashPhase(self.Distance, displaySpeed))%2 == 0 && x < insideWidth {
 				canvas[y][x].rune = '·'
+			}
+		}
+		if snapshot.Shock || self.Slipstream {
+			for _, x := range []int{1, insideWidth - 2} {
+				if (x*7+y*13+int(snapshot.Tick))%4 == 0 && canvas[y][x].rune == ' ' {
+					class := styleBenefit
+					if snapshot.Shock {
+						class = styleShockStreak
+					}
+					canvas[y][x] = styledCell{rune: '¦', style: class}
+				}
 			}
 		}
 	}
@@ -282,7 +432,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		}
 	}
 	for _, hazard := range snapshot.Hazards {
-		if (hazard.Consumed && hazard.Kind == "repair") || hazard.Kind == "fog" {
+		if hazard.Kind == "fog" {
 			continue
 		}
 		row := carBaseRow - int((hazard.Distance-self.Distance)/4)
@@ -296,6 +446,10 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		x := hazard.Lane*laneWidth + laneWidth/2
 		glyph := hazardGlyph(hazard.Kind, hazard.Warning)
 		hazardStyle := styleForHazard(hazard.Kind, hazard.Warning)
+		if hazard.Kind == "repair" && hazard.Consumed {
+			glyph = "[ ]"
+			hazardStyle = styleOtherPlayer
+		}
 		putStyled(canvas[row], x-len([]rune(glyph))/2, glyph, hazardStyle)
 		if hazard.Kind == "traffic" && hazard.Warning {
 			for y := row + 1; y <= min(height-1, row+2); y++ {
@@ -322,8 +476,8 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 	}
 	for y := range fogRows {
 		for x := range canvas[y] {
-			if canvas[y][x].rune == ' ' || canvas[y][x].rune == '·' {
-				canvas[y][x].rune = []rune("░▒▓")[(x+y)%3]
+			if canvas[y][x].style == styleRoad && (canvas[y][x].rune == ' ' || canvas[y][x].rune == '·') {
+				canvas[y][x].rune = []rune("░▒▓")[(x+y+int(snapshot.Tick/3))%3]
 			}
 		}
 	}
@@ -335,6 +489,9 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 			continue
 		}
 		pos := position{lane: player.Lane, row: carBaseRow + player.RowOffset}
+		if fogRows[pos.row] && player.ID != selfID {
+			continue
+		}
 		groups[pos] = append(groups[pos], player)
 	}
 	for pos, players := range groups {
@@ -376,28 +533,41 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 				if pos.row+1 < height {
 					putStyled(canvas[pos.row+1], x-2, bottom, carStyle)
 				}
+				if player.Slipstream {
+					for trailRow := pos.row + 2; trailRow <= min(height-1, pos.row+3); trailRow++ {
+						putStyled(canvas[trailRow], x, "^", styleBenefit)
+					}
+				}
 				break
 			}
 		}
 		if len(players) == 1 && players[0].ID != selfID && players[0].State != game.Exploding {
 			putStyled(canvas[pos.row], x-1, "◇", styleOtherPlayer)
-			putStyled(canvas[pos.row], x+1, " "+players[0].Name, styleOtherPlayer)
+			available := max(0, (pos.lane+1)*laneWidth-(x+1))
+			putStyled(canvas[pos.row], x+1, clip(" "+players[0].Name, available), styleOtherPlayer)
 		}
 	}
 
+	if snapshot.Shock && snapshot.Tick%2 == 0 && len(canvas) > 1 {
+		blank := make([]styledCell, insideWidth)
+		for x := range blank {
+			blank[x] = styledCell{rune: ' ', style: styleRoad}
+		}
+		canvas = append(canvas[1:], blank)
+	}
 	if snapshot.Shock && snapshot.Tick%2 == 0 {
 		leftPad++
-	}
-	styles := opts.Styles
-	if styles == nil {
-		styles = NewStyles(opts.Renderer, opts.Tier)
 	}
 	rows := make([]string, 0, height)
 	for _, row := range canvas {
 		if opts.Mono || opts.Tier == Mono {
 			rows = append(rows, strings.Repeat(" ", leftPad)+"║"+plainRow(row)+"║")
 		} else {
-			rows = append(rows, strings.Repeat(" ", leftPad)+styles.spans[styleRoad].Render("║")+renderStyledRow(row, styles)+styles.spans[styleRoad].Render("║"))
+			border := styles.border
+			if snapshot.Shock {
+				border = styles.borderShock
+			}
+			rows = append(rows, strings.Repeat(" ", leftPad)+border.Render("║")+renderStyledRow(row, styles)+border.Render("║"))
 		}
 	}
 	flash := self.Flash
@@ -418,7 +588,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 			header = styles.headerShock.Render(header)
 			footer = styles.footerShock.Render(footer)
 		} else {
-			header = styles.header.Render(header)
+			header = renderHUD(headerBefore, headerBar, headerAfter, opts.Width, self.Damage, styles)
 			if snapshot.Shock || snapshot.ShockWarning {
 				footer = styles.footerShock.Render(footer)
 			} else {
@@ -435,6 +605,51 @@ func explosionFrame(age uint64, mono bool) string {
 		return []string{"*", "***", "* *", ". ."}[phase]
 	}
 	return []string{"✷", "✹✷✹", "* ✹ *", "·  ·  ·"}[phase]
+}
+
+func dashPhase(distance float64, speed int) int {
+	ratio := min(1.0, max(0.0, float64(speed-110)/150))
+	divisor := 2 + ratio*3
+	return int(distance / divisor)
+}
+
+func renderHUD(before, bar, after string, width, damage int, styles *Styles) string {
+	runes := []rune(before + bar + after)
+	if len(runes) > width {
+		runes = runes[:width]
+	}
+	for len(runes) < width {
+		runes = append(runes, ' ')
+	}
+	cells := make([]styledCell, len(runes))
+	for i, r := range runes {
+		cells[i] = styledCell{rune: r, style: styleHUD}
+	}
+	barStart := len([]rune(before))
+	barEnd := min(len(cells), barStart+len([]rune(bar)))
+	barStyle := styleBenefit
+	if damage >= 75 {
+		barStyle = styleCarDarkRed
+	} else if damage >= 50 {
+		barStyle = styleCarRed
+	} else if damage >= 25 {
+		barStyle = styleCarYellow
+	}
+	for i := barStart; i < barEnd; i++ {
+		cells[i].style = barStyle
+	}
+	return renderStyledRow(cells, styles)
+}
+
+func clip(value string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > maximum {
+		runes = runes[:maximum]
+	}
+	return string(runes)
 }
 
 func tierColor(tier ColorTier, ansi256, truecolor string) lipgloss.Color {

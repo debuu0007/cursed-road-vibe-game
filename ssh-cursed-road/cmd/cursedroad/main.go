@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"cursedroad/internal/limits"
+	gamerender "cursedroad/internal/render"
 	"cursedroad/internal/rooms"
 	"cursedroad/internal/score"
 	gamesession "cursedroad/internal/session"
@@ -112,7 +113,14 @@ func admissionMiddleware(ipLimiter *limits.IPLimiter, gate *limits.Gate) wish.Mi
 			slog.Info("connection accepted", "ip", ip)
 			defer func() { slog.Info("connection closed", "ip", ip, "duration", time.Since(started)) }()
 			releaseSlot, err := gate.Wait(s.Context(), func(ahead int) {
-				_, _ = fmt.Fprintf(s, "\x1b[2J\x1b[HQUEUE TO THE ROAD\r\n\r\n%d cars ahead of you\r\n", ahead)
+				width, height := 80, 24
+				if pty, _, ok := s.Pty(); ok {
+					width, height = pty.Window.Width, pty.Window.Height
+				}
+				card := gamerender.Card(fmt.Sprintf("QUEUE TO THE ROAD\n\n%d cars ahead of you", ahead), gamerender.Options{
+					Width: width, Height: height, Tier: gamerender.Mono, Mono: true,
+				})
+				_, _ = fmt.Fprintf(s, "\x1b[2J\x1b[H%s", card)
 			})
 			if err != nil {
 				return

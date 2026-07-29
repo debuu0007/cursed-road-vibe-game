@@ -41,6 +41,7 @@ done
 expect <<'EXPECT' >"$STATE_DIR/client.log"
 set timeout 12
 set port $env(PORT)
+set env(TERM) xterm-256color
 set ssh_opts [list -tt -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR]
 stty rows 24 columns 80
 log_user 1
@@ -48,7 +49,9 @@ log_user 1
 spawn ssh {*}$ssh_opts road@127.0.0.1
 set alice $spawn_id
 stty rows 24 columns 80 < $spawn_out(slave,name)
-expect -i $alice "who dies today?"
+expect -i $alice -exact "\033\]11;?"
+send -i $alice "\033\]11;rgb:0000/0000/0000\007\033\[?1;2c"
+after 300
 send -i $alice "alice\r"
 after 300
 send -i $alice " "
@@ -59,7 +62,9 @@ after 250
 spawn ssh {*}$ssh_opts road@127.0.0.1
 set bob $spawn_id
 stty rows 24 columns 80 < $spawn_out(slave,name)
-expect -i $bob "who dies today?"
+expect -i $bob -exact "\033\]11;?"
+send -i $bob "\033\]11;rgb:0000/0000/0000\007\033\[?1;2c"
+after 300
 send -i $bob "bob\r"
 after 300
 send -i $bob " "
@@ -83,7 +88,9 @@ expect -i $delta eof
 
 send -i $bob "q"
 expect -i $bob eof
-expect -i $charlie "who dies today?"
+expect -i $charlie -exact "\033\]11;?"
+send -i $charlie "\033\]11;rgb:0000/0000/0000\007\033\[?1;2c"
+after 300
 send -i $charlie "\003"
 expect -i $charlie eof
 
@@ -94,6 +101,15 @@ send -i $alice "dddd"
 set died 0
 for {set i 0} {$i < 400} {incr i} {
   after 150
+  # The fixed seed has repair pads in lane 3 through the middle corridor.
+  # Hold that lane long enough to consume one, then return to lane 4 for the
+  # deterministic death path.
+  if {$i == 0} {
+    send -i $alice "a"
+  }
+  if {$i == 120} {
+    send -i $alice "d"
+  }
   if {[file exists $env(SCORES_PATH)]} {
     set score_file [open $env(SCORES_PATH) r]
     set score_data [read $score_file]
@@ -122,7 +138,9 @@ expect -i $alice eof
 spawn ssh {*}$ssh_opts road@127.0.0.1
 set drain $spawn_id
 stty rows 24 columns 80 < $spawn_out(slave,name)
-expect -i $drain "who dies today?"
+expect -i $drain -exact "\033\]11;?"
+send -i $drain "\033\]11;rgb:0000/0000/0000\007\033\[?1;2c"
+after 300
 send -i $drain "drain\r"
 after 300
 send -i $drain " "
