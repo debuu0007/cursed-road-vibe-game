@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"cursedroad/internal/curse"
 	"cursedroad/internal/game"
+	"cursedroad/internal/score"
 )
 
 func TestPublishLatestDropsOldSnapshot(t *testing.T) {
@@ -159,6 +161,78 @@ func TestDisconnectScoresOnlyAtOneHundredMetres(t *testing.T) {
 	player.State = game.Spectating
 	if shouldRecordDisconnect(&player) {
 		t.Fatal("spectator disconnect would be recorded")
+	}
+}
+
+type blockingScoreSink struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingScoreSink) Write(data []byte) (int, error) {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return len(data), nil
+}
+
+func (*blockingScoreSink) Sync() error  { return nil }
+func (*blockingScoreSink) Close() error { return nil }
+
+func TestRoomKeepsTickingWhileScorePersistenceIsBlocked(t *testing.T) {
+	sink := &blockingScoreSink{started: make(chan struct{}), release: make(chan struct{})}
+	store := score.NewStore(sink)
+	ctx, cancel := context.WithCancel(context.Background())
+	room := NewRoom(ctx, "latency-test", DefaultWorldSeed, store)
+	alice, err := room.Join(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := room.Join(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	cleanup := func() {
+		releaseOnce.Do(func() { close(sink.release) })
+		bob.Close()
+		cancel()
+		<-room.Stopped()
+		_ = store.Close()
+	}
+	defer cleanup()
+
+	var baseline uint64
+	deadline := time.After(5 * time.Second)
+	for baseline == 0 {
+		select {
+		case snapshot := <-alice.Updates:
+			for _, player := range snapshot.Players {
+				if player.ID == alice.PlayerID && player.Distance >= 100 {
+					baseline = snapshot.Tick
+				}
+			}
+		case <-deadline:
+			t.Fatal("player did not reach disconnect scoring threshold")
+		}
+	}
+	alice.Close()
+	select {
+	case <-sink.started:
+	case <-time.After(time.Second):
+		t.Fatal("artificially slow score sink was never entered")
+	}
+
+	tickDeadline := time.After(time.Second)
+	for {
+		select {
+		case snapshot := <-bob.Updates:
+			if snapshot.Tick >= baseline+5 {
+				return
+			}
+		case <-tickDeadline:
+			t.Fatal("room stopped ticking while score persistence was blocked")
+		}
 	}
 }
 

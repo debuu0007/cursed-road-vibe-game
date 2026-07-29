@@ -31,7 +31,7 @@ type Boards struct {
 
 type Store struct {
 	mu        sync.RWMutex
-	file      *os.File
+	file      Sink
 	entries   []Entry
 	now       func() time.Time
 	records   chan recordRequest
@@ -40,6 +40,12 @@ type Store struct {
 	closed    atomic.Bool
 	closeOnce sync.Once
 	writeHook func()
+}
+
+type Sink interface {
+	io.Writer
+	Sync() error
+	Close() error
 }
 
 type recordRequest struct {
@@ -59,11 +65,23 @@ func Open(path string) (*Store, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	store.records = make(chan recordRequest, 256)
-	store.closing = make(chan chan error)
-	store.done = make(chan struct{})
-	go store.run()
+	store.start()
 	return store, nil
+}
+
+// NewStore constructs a store around an already-open sink. It is used by the
+// room latency test to model a blocked disk without changing production paths.
+func NewStore(sink Sink) *Store {
+	store := &Store{file: sink, now: time.Now}
+	store.start()
+	return store
+}
+
+func (s *Store) start() {
+	s.records = make(chan recordRequest, 256)
+	s.closing = make(chan chan error)
+	s.done = make(chan struct{})
+	go s.run()
 }
 
 func (s *Store) load(reader io.ReadSeeker) error {
