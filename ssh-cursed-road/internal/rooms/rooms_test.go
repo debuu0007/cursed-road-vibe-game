@@ -106,6 +106,26 @@ func TestHazardResolutionAndContestedRepair(t *testing.T) {
 	}
 }
 
+func TestBoostedPlayerMeetsPersonalDistanceHazardEarlier(t *testing.T) {
+	traffic := curse.Event{ID: 1, Kind: curse.Traffic, Distance: 100, Lane: 2, Length: 10}
+	timeline := []curse.Event{traffic}
+	resolved := make(map[int]map[string]bool)
+	consumed := make(map[int]bool)
+	boosted := game.NewPlayer("boosted", "boosted")
+	normal := game.NewPlayer("normal", "normal")
+	boosted.Distance, normal.Distance = 96.3, 96.3
+	boosted.SpeedNudge = 1
+
+	advancePlayer(&boosted, timeline, resolved, consumed, 100, 1, 1)
+	advancePlayer(&normal, timeline, resolved, consumed, 100, 1, 1)
+	if boosted.Damage != 46 {
+		t.Fatalf("boosted damage = %d, want 46 at personal distance %.2f", boosted.Damage, boosted.Distance)
+	}
+	if normal.Damage != 0 {
+		t.Fatalf("normal player met hazard too early at personal distance %.2f", normal.Distance)
+	}
+}
+
 func TestMatchmakingFillsNewestRoomThenCreates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

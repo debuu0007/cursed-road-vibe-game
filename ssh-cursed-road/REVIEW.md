@@ -69,6 +69,8 @@ Steering moves one lane per keypress and relies on the client OS's key repeat (~
 **Fix:** colorize during canvas composition (per-cell/segment spans with one style each), or have glyph replacements end by *re-opening* the gray foreground instead of relying on reset. The span-based approach also fixes A3.
 
 ### B2. Personal distance and hazard positions drift apart
+> ✅ fixed with per-player collision and render distance; room distance retained for pacing/SHOCK (B2)
+
 Hazards are resolved and drawn against the **room's** shared `distance` (`room.go:186–204`, `render.go:190–204`), but the HUD `DIST`, the score, and slipstream all use the player's **personal** `p.Distance`, which permanently outruns room distance whenever `SpeedNudge=+1` or slipstream is active (`room.go:222–231`). Consequences: (a) the header distance doesn't correspond to where hazards actually are; (b) holding `w` inflates score forever while having zero effect on which hazards you hit — boost is strictly free points; (c) two players at the same screen position show different distances.
 
 **Fix (pick one):** simplest — make score/HUD use room distance + a small boost *bonus* pool, keeping one world truth; or fully commit — resolve hazards against each player's personal distance (hazard timeline is already distance-keyed, so per-player resolution is a one-line change in `resolveHazards`, and rendering per-player already receives its own snapshot overlay). The second is truer to "boost = risk of meeting hazards sooner" and makes `w/s` a real dodge tool.

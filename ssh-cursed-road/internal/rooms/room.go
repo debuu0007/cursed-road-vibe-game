@@ -182,7 +182,7 @@ func (r *Room) run(ctx context.Context) {
 				speedMultiplier = 2
 			}
 			distance += game.BaseSpeed(distance) * speedMultiplier / 3.6 / TickRate
-			hazards, shockWarning := activeHazards(timeline, distance, consumed)
+			_, shockWarning := activeHazards(timeline, distance, consumed)
 			timelineCursor, shockUntil, shock = advanceTimeline(timeline, timelineCursor, distance, consumed, tick, shockUntil)
 			ids := make([]string, 0, len(players))
 			for id := range players {
@@ -190,8 +190,8 @@ func (r *Room) run(ctx context.Context) {
 			}
 			sort.Strings(ids)
 			for _, id := range ids {
-				resolveHazards(players[id].player, timeline, resolved, consumed, distance, tick)
 				p := players[id].player
+				advancePlayer(p, timeline, resolved, consumed, distance, speedMultiplier, tick)
 				if p.State == game.Exploding && p.DeathTick == 0 {
 					p.DeathTick = tick
 				}
@@ -206,24 +206,43 @@ func (r *Room) run(ctx context.Context) {
 			views := make([]game.PlayerView, 0, len(players))
 			for _, sub := range players {
 				p := sub.player
-				if p.State == game.Racing {
-					personal := 1.0
-					personal += float64(p.SpeedNudge) * 0.2
-					if tick < p.SlipstreamUntil {
-						personal *= 1.5
-					}
-					p.Distance += game.BaseSpeed(distance) * speedMultiplier * personal / 3.6 / TickRate
-					p.RowOffset = -p.SpeedNudge * 2
-				}
 				views = append(views, game.ViewOf(*p, tick))
 			}
 			sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
-			snapshot := game.Snapshot{RoomID: r.id, Seed: r.seed, Tick: tick, Distance: distance, Players: views, CreatedAt: now, Hazards: hazards, Shock: shock, ShockWarning: shockWarning}
 			for _, sub := range players {
+				personalHazards := activePlayerHazards(timeline, sub.player.Distance, consumed)
+				snapshot := game.Snapshot{
+					RoomID: r.id, Seed: r.seed, Tick: tick, Distance: distance, Players: views,
+					CreatedAt: now, Hazards: personalHazards, Shock: shock, ShockWarning: shockWarning,
+				}
 				PublishLatest(sub.frames, snapshot)
 			}
 		}
 	}
+}
+
+func activePlayerHazards(timeline []curse.Event, distance float64, consumed map[int]bool) []game.HazardView {
+	hazards, _ := activeHazards(timeline, distance, consumed)
+	visible := hazards[:0]
+	for _, hazard := range hazards {
+		if hazard.Kind != string(curse.Shock) {
+			visible = append(visible, hazard)
+		}
+	}
+	return visible
+}
+
+func advancePlayer(player *game.Player, timeline []curse.Event, resolved map[int]map[string]bool, consumed map[int]bool, roomDistance, speedMultiplier float64, tick uint64) {
+	if player.State != game.Racing {
+		return
+	}
+	personalSpeed := 1.0 + float64(player.SpeedNudge)*0.2
+	if tick < player.SlipstreamUntil {
+		personalSpeed *= 1.5
+	}
+	player.Distance += game.BaseSpeed(roomDistance) * speedMultiplier * personalSpeed / 3.6 / TickRate
+	player.RowOffset = -player.SpeedNudge * 2
+	resolveHazards(player, timeline, resolved, consumed, player.Distance, tick)
 }
 
 func advanceTimeline(timeline []curse.Event, cursor int, distance float64, consumed map[int]bool, tick, shockUntil uint64) (int, uint64, bool) {

@@ -252,7 +252,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		}
 		for lane := 1; lane < game.LaneCount; lane++ {
 			x := lane * laneWidth
-			if (y+int(snapshot.Distance/3))%2 == 0 && x < insideWidth {
+			if (y+int(self.Distance/3))%2 == 0 && x < insideWidth {
 				canvas[y][x].rune = '·'
 			}
 		}
@@ -260,7 +260,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 
 	fogRows := make(map[int]bool)
 	for _, hazard := range snapshot.Hazards {
-		row := carBaseRow - int((hazard.Distance-snapshot.Distance)/4)
+		row := carBaseRow - int((hazard.Distance-self.Distance)/4)
 		lengthRows := max(1, int(hazard.Length/4))
 		if hazard.Kind == "fog" {
 			for y := row - lengthRows; y <= row; y++ {
@@ -274,7 +274,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		if (hazard.Consumed && hazard.Kind == "repair") || hazard.Kind == "fog" {
 			continue
 		}
-		row := carBaseRow - int((hazard.Distance-snapshot.Distance)/4)
+		row := carBaseRow - int((hazard.Distance-self.Distance)/4)
 		lengthRows := max(1, int(hazard.Length/4))
 		if row < 0 || row >= height {
 			continue

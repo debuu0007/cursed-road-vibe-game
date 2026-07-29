@@ -37,6 +37,18 @@ func TestSmallTerminalCard(t *testing.T) {
 	}
 }
 
+func TestHazardsRenderAgainstLocalPersonalDistance(t *testing.T) {
+	snapshot := game.Snapshot{
+		Distance: 0,
+		Players:  []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing, Distance: 100}},
+		Hazards:  []game.HazardView{{ID: 1, Kind: "oil", Distance: 140, Lane: 2, Length: 14}},
+	}
+	view := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if !strings.Contains(view, "≈≈≈") {
+		t.Fatalf("personal-distance hazard was not visible:\n%s", view)
+	}
+}
+
 func BenchmarkLegacyColorizeRoad(b *testing.B) {
 	renderer := trueColorRenderer()
 	opts := Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer}
