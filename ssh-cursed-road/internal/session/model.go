@@ -15,6 +15,7 @@ import (
 	"cursedroad/internal/score"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 type screen int
@@ -34,46 +35,42 @@ type snapshotMsg game.Snapshot
 type roomClosedMsg struct{}
 type joinReadyMsg struct{}
 type deathWallDoneMsg struct{}
+type deathWallSkippableMsg struct{}
 type idleQuitMsg struct{}
 type roadClosedMsg struct{}
 type rejoinedMsg struct{ sub rooms.Subscription }
 
+var blockedNames = []string{"fuck", "shit", "cunt", "nigger", "nazi"}
+
 type Model struct {
-	width            int
-	height           int
-	screen           screen
-	nameInput        []rune
-	name             string
-	mono             bool
-	colorTier        render.ColorTier
-	renderer         *lipgloss.Renderer
-	renderStyles     *render.Styles
-	manager          *rooms.Manager
-	scores           *score.Store
-	subMu            sync.Mutex
-	sub              rooms.Subscription
-	snapshot         game.Snapshot
-	lastInput        time.Time
-	inputWindow      time.Time
-	inputCount       int
-	draining         <-chan struct{}
-	closedMessage    string
-	respawning       bool
-	reconnectMessage string
+	width              int
+	height             int
+	screen             screen
+	nameInput          []rune
+	name               string
+	mono               bool
+	colorTier          render.ColorTier
+	renderer           *lipgloss.Renderer
+	renderStyles       *render.Styles
+	manager            *rooms.Manager
+	scores             *score.Store
+	subMu              sync.Mutex
+	sub                rooms.Subscription
+	snapshot           game.Snapshot
+	lastInput          time.Time
+	inputWindow        time.Time
+	inputCount         int
+	lastSteer          string
+	lastSteerAt        time.Time
+	draining           <-chan struct{}
+	closedMessage      string
+	respawning         bool
+	reconnectMessage   string
+	deathWallSkippable bool
 }
 
-func NewModel(manager *rooms.Manager, scores *score.Store, draining <-chan struct{}, renderer *lipgloss.Renderer, term string, trueColor bool) *Model {
-	termLower := strings.ToLower(term)
-	tier := render.Mono
-	if strings.Contains(termLower, "256color") {
-		tier = render.Color256
-	}
-	if trueColor || strings.Contains(termLower, "direct") || strings.Contains(termLower, "truecolor") || strings.Contains(termLower, "kitty") {
-		tier = render.TrueColor
-	}
-	if term == "" || strings.EqualFold(term, "dumb") {
-		tier = render.Mono
-	}
+func NewModel(manager *rooms.Manager, scores *score.Store, draining <-chan struct{}, renderer *lipgloss.Renderer) *Model {
+	tier := colorTier(renderer)
 	return &Model{
 		width: 80, height: 24, screen: nameScreen, colorTier: tier,
 		manager: manager, scores: scores, draining: draining, renderer: renderer,
@@ -81,10 +78,24 @@ func NewModel(manager *rooms.Manager, scores *score.Store, draining <-chan struc
 	}
 }
 
+func colorTier(renderer *lipgloss.Renderer) render.ColorTier {
+	if renderer == nil {
+		return render.Mono
+	}
+	switch renderer.ColorProfile() {
+	case termenv.TrueColor:
+		return render.TrueColor
+	case termenv.Ascii:
+		return render.Mono
+	default:
+		return render.Color256
+	}
+}
+
 func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), waitForDrain(m.draining)) }
 
 func tick() tea.Cmd {
-	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -107,6 +118,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, rejoinRoom(m.manager, m.name)
 		}
 		if m.screen == deathWallScreen {
+			if m.deathWallSkippable {
+				m.screen = spectatorScreen
+			}
 			return m, nil
 		}
 		if m.screen == spectatorScreen {
@@ -118,9 +132,13 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "left", "a":
-			m.sub.Send(game.SteerLeft)
+			for range m.steerRepeats("left", m.lastInput) {
+				m.sub.Send(game.SteerLeft)
+			}
 		case "right", "d":
-			m.sub.Send(game.SteerRight)
+			for range m.steerRepeats("right", m.lastInput) {
+				m.sub.Send(game.SteerRight)
+			}
 		case "up", "w":
 			m.sub.Send(game.SpeedUp)
 		case "down", "s":
@@ -143,7 +161,8 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			for _, player := range m.snapshot.Players {
 				if player.ID == m.sub.PlayerID && player.State == game.Spectating {
 					m.screen = deathWallScreen
-					return m, tea.Batch(waitForSnapshot(m.sub.Updates), deathWallDelay())
+					m.deathWallSkippable = false
+					return m, tea.Batch(waitForSnapshot(m.sub.Updates), deathWallDelay(), deathWallSkipDelay())
 				}
 			}
 		}
@@ -177,6 +196,10 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == deathWallScreen {
 			m.screen = spectatorScreen
 		}
+	case deathWallSkippableMsg:
+		if m.screen == deathWallScreen {
+			m.deathWallSkippable = true
+		}
 	case idleQuitMsg:
 		return m, tea.Quit
 	case roadClosedMsg:
@@ -185,6 +208,16 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return idleQuitMsg{} })
 	}
 	return m, nil
+}
+
+func (m *Model) steerRepeats(direction string, now time.Time) int {
+	repeats := 1
+	if direction == m.lastSteer && !m.lastSteerAt.IsZero() && now.Sub(m.lastSteerAt) <= 150*time.Millisecond {
+		repeats = 2
+	}
+	m.lastSteer = direction
+	m.lastSteerAt = now
+	return repeats
 }
 
 func (m *Model) updateName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -219,10 +252,10 @@ func (m *Model) View() string {
 		return center(m.width, m.height, card)
 	}
 	if m.screen == joinWallScreen {
-		return render.Wall(m.scores.Boards(), m.width, m.height, false)
+		return render.Wall(m.scores.Boards(), m.width, m.height, false, false)
 	}
 	if m.screen == deathWallScreen {
-		return render.Wall(m.scores.Boards(), m.width, m.height, true)
+		return render.Wall(m.scores.Boards(), m.width, m.height, true, m.deathWallSkippable)
 	}
 	if m.screen == closedScreen {
 		return center(m.width, m.height, m.closedMessage)
@@ -270,6 +303,10 @@ func deathWallDelay() tea.Cmd {
 	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return deathWallDoneMsg{} })
 }
 
+func deathWallSkipDelay() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return deathWallSkippableMsg{} })
+}
+
 func waitForSnapshot(updates <-chan game.Snapshot) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, ok := <-updates
@@ -300,8 +337,7 @@ func sanitizeName(value string) string {
 		}
 	}
 	name := string(out)
-	blocked := []string{"fuck", "shit", "cunt", "nigger", "nazi"}
-	for _, word := range blocked {
+	for _, word := range blockedNames {
 		if strings.Contains(name, word) {
 			return ""
 		}

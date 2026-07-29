@@ -33,3 +33,11 @@ This file records choices made where `PLAN.md` deliberately leaves details open.
 - C2: damage records a three-tick hit window in authoritative player state, exposed as a boolean view flag and rendered with a cached bold reverse-red car style.
 - C3: the two-second exploding state is divided into four ten-tick animation phases, with distinct Unicode and mono-safe frame sets.
 - C1–C3 visual verification: a freshly rebuilt real SSH run captured 63 traffic glyph updates spanning terminal rows 2–23, two mono hit-car frames (`▓██▓`), and all three post-impact mono explosion expansions (`***`, `* *`, `. .`) before the wall. The E2E harness now retains its full ignored client transcript so these claims remain inspectable after each run.
+- A4: the general session maintenance timer now wakes every five seconds; phase C9 will add a separate 500ms timer scoped strictly to the name screen for cursor animation.
+- A5: color tier comes exclusively from the Wish/Lipgloss session renderer profile: truecolor maps to the full palette, ASCII to mono, and other ANSI profiles to the renderer-downsampled color palette.
+- A6: only headers are padded for deliberate full-width redraw semantics. Wall lines, road rows, and footers truncate at the terminal boundary without trailing fill bytes.
+- A7: the second same-direction steering press within 150ms emits two room inputs. Direction changes and slower repeats remain single-cell moves.
+- B3: disconnect scores require an active, unrecorded racing player at an inclusive 100m threshold.
+- B4: the HUD counts `Racing` players separately and labels all exploding/spectating participants as ghosts.
+- B5: gap interiors remain void, while their first and last rows alternate `▚▞` across the affected lane in mono and color tiers.
+- B6: the public host-key companion is ignored with `/host_ed25519*`; the name blocklist is centralized; `Close` remains intentionally limited to the mutex-protected subscription; and death walls accept any key after a two-second unskippable screenshot window while retaining the five-second automatic transition.

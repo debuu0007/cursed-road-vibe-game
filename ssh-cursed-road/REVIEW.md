@@ -40,21 +40,29 @@ Reviewed at ~2,150 lines of Go. `go vet ./...` clean, all unit tests pass, `.git
 **Fix:** precompute once per session (they only depend on `ColorTier`): a small struct of already-rendered glyph strings, e.g. `styledOil = style.Render("≈≈≈")` built in `NewModel`, and pass it through `Options`. Then `colorizeRoad` is only the `ReplaceAll` calls with cached strings — or better, colorize while composing the canvas (you know the glyph positions there; no string searching needed at all).
 
 ### A4. A 50ms wakeup per session just to check the idle timer
+> ✅ fixed with five-second maintenance wakeup (A4)
+
 `internal/session/model.go:84–86`: `tick()` re-arms every 50ms purely to test a 3-minute idle timeout. That's 20 wakeups/s/session — with 300 sessions, 6,000 timer events/s doing nothing.
 
 **Fix:** tick every 5 seconds. Idle-timeout precision of ±5s is invisible to users.
 
 ### A5. Truecolor detection mostly can't work over SSH
+> ✅ fixed by deriving tier from the Wish/Lipgloss renderer profile (A5)
+
 `cmd/cursedroad/main.go:65` reads `COLORTERM` from `s.Environ()`, but SSH clients don't forward `COLORTERM` unless the user configures `SendEnv` — so almost everyone silently lands on 256-color or mono even in iTerm/kitty/Ghostty. (The `TERM`-substring fallbacks in `session.NewModel` catch kitty but not the common `xterm-256color` truecolor terminals.)
 
 **Fix:** trust `wishtea.MakeRenderer(s)` — it already profiles the session — and derive the tier from `renderer.ColorProfile()` instead of hand-parsing env vars. Delete the manual TERM sniffing.
 
 ### A6. Every line is padded to full terminal width
+> ✅ fixed; only the intentionally full-width header remains padded (A6)
+
 `internal/render/render.go:383–389` (`fit`) pads all lines with trailing spaces to `width`. Bubble Tea diffs by line, so any change ships the whole padded line; trailing spaces are pure wasted bytes on a 1,000-player launch day and make asciinema files bigger.
 
 **Fix:** only pad lines that need it for centering/right-alignment (the header). For road rows, stop at the right `║`.
 
 ### A7. Perceived input lag is OS key-repeat delay, not the server
+> ✅ fixed with 150ms same-direction tap-tap dash (A7)
+
 Steering moves one lane per keypress and relies on the client OS's key repeat (~300–500ms initial delay) for held keys. That delay *feels* like network lag. You can't detect key-up over SSH, but you can soften it: if two presses of the same direction arrive within ~150ms, move 2 lanes (tap-tap dash). Cheap, and makes the controls feel much snappier than any server-side change would.
 
 ---
@@ -76,19 +84,27 @@ Hazards are resolved and drawn against the **room's** shared `distance` (`room.g
 **Fix (pick one):** simplest — make score/HUD use room distance + a small boost *bonus* pool, keeping one world truth; or fully commit — resolve hazards against each player's personal distance (hazard timeline is already distance-keyed, so per-player resolution is a one-line change in `resolveHazards`, and rendering per-player already receives its own snapshot overlay). The second is truer to "boost = risk of meeting hazards sooner" and makes `w/s` a real dodge tool.
 
 ### B3. Quitting at 0m spams the wall of death
+> ✅ fixed with inclusive ≥100m disconnect-recording threshold and test (B3)
+
 `room.go:157–164` records `LEFT THE ROAD` for any racing player who disconnects — including someone who connected, saw the road, and quit at 12m. Launch day will fill "TODAY'S TOP 10" with `anon_3f2a 12m` lines.
 
 **Fix:** only record on disconnect if `Distance >= 100` (or only record deaths, and let leavers vanish — arguably more on-brand: the road forgets you).
 
 ### B4. Header player count includes spectators
+> ✅ fixed with separate racing and ghost counts (B4)
+
 `render.go:170–172` prints `len(snapshot.Players)` as "N racing", but the slice includes spectators. Count `State == Racing` only (spectators can be a second number: `12 racing · 3 ghosts`).
 
 ### B5. Gap hazard is nearly invisible
+> ✅ fixed with alternating crumbled edge rows around the void (B5)
+
 The gap renders as blank cells (`render.go:225–231`, glyph `"     "`), which on an empty dark road is… nothing. In mono it's literally undetectable until you take 58 damage.
 
 **Fix:** draw crumbled edges — first/last row of the gap as `▚▞▚▞` (or `░░░` in mono) across the lane, void rows empty between them. Reads as "hole" at a glance in every color tier.
 
 ### B6. Small ones
+> ✅ fixed/audited: host-key glob, centralized blocklist, Close isolation, and 2s death-wall skip (B6)
+
 - `host_ed25519.pub` isn't in `.gitignore` (harmless, but for cleanliness add `/host_ed25519*`).
 - `session.Model.snapshot`/`screen` are written from the Update loop and read in `View` — fine under Bubble Tea's single-threaded model, but `Close()` is called from a separate goroutine (`main.go:68–71`); it correctly touches only `sub` under `subMu`. Keep it that way — don't add fields to `Close()` later.
 - `sanitizeName` blocklist is substring-based and tiny; fine for launch, but expect creative bypasses — keep the list in one place so it's easy to extend live.

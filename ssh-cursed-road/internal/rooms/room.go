@@ -157,7 +157,7 @@ func (r *Room) run(ctx context.Context) {
 				msg.reply <- Subscription{PlayerID: id, Updates: frames, room: r}
 			case leaveMessage:
 				if sub, ok := players[msg.playerID]; ok {
-					if sub.player.State == game.Racing && !sub.player.ScoreRecorded && r.scores != nil {
+					if shouldRecordDisconnect(sub.player) && r.scores != nil {
 						sub.player.Cause = "LEFT THE ROAD"
 						r.scores.Record(sub.player.Name, sub.player.Distance, sub.player.Damage, sub.player.Cause)
 						sub.player.ScoreRecorded = true
@@ -262,6 +262,10 @@ func advancePlayer(player *game.Player, timeline []curse.Event, resolved map[int
 	player.Distance += game.BaseSpeed(roomDistance) * speedMultiplier * personalSpeed / 3.6 / TickRate
 	player.RowOffset = -player.SpeedNudge * 2
 	resolveHazards(player, timeline, resolved, consumed, player.Distance, tick)
+}
+
+func shouldRecordDisconnect(player *game.Player) bool {
+	return player != nil && player.State == game.Racing && !player.ScoreRecorded && player.Distance >= 100
 }
 
 func advanceTimeline(timeline []curse.Event, cursor int, distance float64, consumed map[int]bool, tick, shockUntil uint64) (int, uint64, bool) {

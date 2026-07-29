@@ -146,6 +146,22 @@ func TestMovingTrafficUsesSamePositionForViewAndCollision(t *testing.T) {
 	}
 }
 
+func TestDisconnectScoresOnlyAtOneHundredMetres(t *testing.T) {
+	player := game.NewPlayer("p1", "alice")
+	player.Distance = 99.99
+	if shouldRecordDisconnect(&player) {
+		t.Fatal("sub-100m disconnect would be recorded")
+	}
+	player.Distance = 100
+	if !shouldRecordDisconnect(&player) {
+		t.Fatal("100m disconnect would not be recorded")
+	}
+	player.State = game.Spectating
+	if shouldRecordDisconnect(&player) {
+		t.Fatal("spectator disconnect would be recorded")
+	}
+}
+
 func TestMatchmakingFillsNewestRoomThenCreates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

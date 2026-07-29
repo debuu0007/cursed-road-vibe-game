@@ -74,6 +74,39 @@ func TestHitCarUsesReverseVideoStyle(t *testing.T) {
 	}
 }
 
+func TestRoadRowsAndFooterAreNotPaddedToTerminalWidth(t *testing.T) {
+	snapshot := game.Snapshot{Players: []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing}}}
+	lines := strings.Split(Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true}), "\n")
+	if len([]rune(lines[1])) >= 80 {
+		t.Fatalf("road row width = %d, want less than terminal width", len([]rune(lines[1])))
+	}
+	if len([]rune(lines[len(lines)-1])) >= 80 {
+		t.Fatalf("footer width = %d, want unpadded", len([]rune(lines[len(lines)-1])))
+	}
+}
+
+func TestHeaderSeparatesRacersAndGhosts(t *testing.T) {
+	snapshot := game.Snapshot{Players: []game.PlayerView{
+		{ID: "self", Name: "alice", Lane: 2, State: game.Racing},
+		{ID: "ghost", Name: "bob", Lane: 3, State: game.Spectating},
+	}}
+	header := strings.Split(Race(snapshot, "self", Options{Width: 100, Height: 24, Tier: Mono, Mono: true}), "\n")[0]
+	if !strings.Contains(header, "1 racing · 1 ghosts") {
+		t.Fatalf("incorrect player counts: %q", header)
+	}
+}
+
+func TestGapHasVisibleCrumblingEdges(t *testing.T) {
+	snapshot := game.Snapshot{
+		Players: []game.PlayerView{{ID: "self", Name: "alice", Lane: 2, State: game.Racing, Distance: 100}},
+		Hazards: []game.HazardView{{ID: 1, Kind: "gap", Distance: 140, Lane: 2, Length: 8}},
+	}
+	view := Race(snapshot, "self", Options{Width: 80, Height: 24, Tier: Mono, Mono: true})
+	if !strings.Contains(view, "▚") || !strings.Contains(view, "▞") {
+		t.Fatalf("gap crumbling edges missing:\n%s", view)
+	}
+}
+
 func BenchmarkLegacyColorizeRoad(b *testing.B) {
 	renderer := trueColorRenderer()
 	opts := Options{Width: 80, Height: 24, Tier: TrueColor, Renderer: renderer}

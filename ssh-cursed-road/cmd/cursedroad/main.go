@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -61,10 +60,8 @@ func run() error {
 		wish.WithAddress(net.JoinHostPort(*host, fmt.Sprint(*port))),
 		wish.WithHostKeyPath(*hostKey),
 		wish.WithMiddleware(wishtea.Middleware(func(s ssh.Session) (tea.Model, []tea.ProgramOption) {
-			term := envValue(s.Environ(), "TERM")
-			trueColor := strings.Contains(strings.ToLower(envValue(s.Environ(), "COLORTERM")), "truecolor")
 			renderer := wishtea.MakeRenderer(s)
-			model := gamesession.NewModel(manager, scores, draining, renderer, term, trueColor)
+			model := gamesession.NewModel(manager, scores, draining, renderer)
 			go func() {
 				<-s.Context().Done()
 				model.Close()
@@ -124,14 +121,4 @@ func admissionMiddleware(ipLimiter *limits.IPLimiter, gate *limits.Gate) wish.Mi
 			next(s)
 		}
 	}
-}
-
-func envValue(environ []string, key string) string {
-	prefix := key + "="
-	for _, entry := range environ {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	return ""
 }

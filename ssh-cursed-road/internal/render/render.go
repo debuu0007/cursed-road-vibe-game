@@ -100,7 +100,7 @@ type styledCell struct {
 	style styleClass
 }
 
-func Wall(boards score.Boards, width, height int, death bool) string {
+func Wall(boards score.Boards, width, height int, death, skippable bool) string {
 	title := "WALL OF DEATH"
 	if death {
 		title = "YOU FLATLINED — WALL OF DEATH"
@@ -115,7 +115,11 @@ func Wall(boards score.Boards, width, height int, death bool) string {
 	lines = append(lines, scoreLines(boards.AllTime, remaining)...)
 	lines = append(lines, "", "share: asciinema + \"ssh cursed.road\"")
 	if death {
-		lines = append(lines, "spectating shortly…")
+		if skippable {
+			lines = append(lines, "any key: spectate now")
+		} else {
+			lines = append(lines, "spectating shortly…")
+		}
 	} else {
 		lines = append(lines, "any key skips · THE ROAD is the only curse unlocked")
 	}
@@ -183,7 +187,7 @@ func Solo(p game.Player, distance float64, opts Options) string {
 
 	header := fmt.Sprintf(" SPD %3d km/h   DIST %6.0fm   DMG %s %3d   %-20s",
 		game.DisplaySpeed(distance, p.SpeedNudge, false), distance, DamageBar(p.Damage), p.Damage, game.SurvivalStatus(p.Damage))
-	header = fit(header, opts.Width)
+	header = pad(header, opts.Width)
 
 	rows := make([]string, 0, height)
 	for y := 0; y < height; y++ {
@@ -225,10 +229,15 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		return SmallCard(opts.Width, opts.Height)
 	}
 	var self game.PlayerView
+	racingCount, ghostCount := 0, 0
 	for _, player := range snapshot.Players {
 		if player.ID == selfID {
 			self = player
-			break
+		}
+		if player.State == game.Racing {
+			racingCount++
+		} else {
+			ghostCount++
 		}
 	}
 	height := opts.Height - 2
@@ -242,9 +251,9 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 	if self.Slipstream {
 		displaySpeed = displaySpeed * 3 / 2
 	}
-	header := fit(fmt.Sprintf(" SPD %3d km/h   DIST %6.0fm   DMG %s %3d   %-19s %2d racing",
+	header := pad(fmt.Sprintf(" SPD %3d  DIST %5.0fm  DMG %s %3d  %-18s %2d racing · %d ghosts",
 		displaySpeed, self.Distance,
-		DamageBar(self.Damage), self.Damage, game.SurvivalStatus(self.Damage), len(snapshot.Players)), opts.Width)
+		DamageBar(self.Damage), self.Damage, game.SurvivalStatus(self.Damage), racingCount, ghostCount), opts.Width)
 
 	canvas := make([][]styledCell, height)
 	for y := range canvas {
@@ -299,9 +308,14 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 			}
 		}
 		if hazard.Kind == "gap" {
-			for y := max(0, row-lengthRows); y <= row; y++ {
+			top := max(0, row-lengthRows)
+			for y := top; y <= row; y++ {
 				for laneX := hazard.Lane * laneWidth; laneX < (hazard.Lane+1)*laneWidth && laneX < len(canvas[y]); laneX++ {
-					canvas[y][laneX] = styledCell{rune: ' ', style: styleRoad}
+					if y == top || y == row {
+						canvas[y][laneX] = styledCell{rune: []rune("▚▞")[(laneX+y)%2], style: styleHazardRed}
+					} else {
+						canvas[y][laneX] = styledCell{rune: ' ', style: styleRoad}
+					}
 				}
 			}
 		}
@@ -522,7 +536,12 @@ func fit(s string, width int) string {
 	if len(r) > width {
 		return string(r[:width])
 	}
-	return s + strings.Repeat(" ", width-len(r))
+	return s
+}
+
+func pad(s string, width int) string {
+	s = fit(s, width)
+	return s + strings.Repeat(" ", max(0, width-len([]rune(s))))
 }
 
 func put(row []rune, start int, text string) {
