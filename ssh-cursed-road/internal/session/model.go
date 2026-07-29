@@ -47,6 +47,7 @@ type Model struct {
 	mono             bool
 	colorTier        render.ColorTier
 	renderer         *lipgloss.Renderer
+	renderStyles     *render.Styles
 	manager          *rooms.Manager
 	scores           *score.Store
 	subMu            sync.Mutex
@@ -75,7 +76,8 @@ func NewModel(manager *rooms.Manager, scores *score.Store, draining <-chan struc
 	}
 	return &Model{
 		width: 80, height: 24, screen: nameScreen, colorTier: tier,
-		manager: manager, scores: scores, draining: draining, renderer: renderer, lastInput: time.Now(),
+		manager: manager, scores: scores, draining: draining, renderer: renderer,
+		renderStyles: render.NewStyles(renderer, tier), lastInput: time.Now(),
 	}
 }
 
@@ -228,7 +230,10 @@ func (m *Model) View() string {
 	if m.screen == reconnectScreen {
 		return center(m.width, m.height, m.reconnectMessage)
 	}
-	return render.Race(m.snapshot, m.sub.PlayerID, render.Options{Width: m.width, Height: m.height, Tier: m.colorTier, Mono: m.mono, Renderer: m.renderer})
+	return render.Race(m.snapshot, m.sub.PlayerID, render.Options{
+		Width: m.width, Height: m.height, Tier: m.colorTier, Mono: m.mono,
+		Renderer: m.renderer, Styles: m.renderStyles,
+	})
 }
 
 func rejoinRoom(manager *rooms.Manager, name string) tea.Cmd {

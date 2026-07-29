@@ -23,6 +23,79 @@ type Options struct {
 	Tier     ColorTier
 	Mono     bool
 	Renderer *lipgloss.Renderer
+	Styles   *Styles
+}
+
+type styleClass uint8
+
+const (
+	styleRoad styleClass = iota
+	styleHazardRed
+	styleOil
+	styleBenefit
+	styleOtherPlayer
+	styleCarWhite
+	styleCarYellow
+	styleCarRed
+	styleCarDarkRed
+	styleExplosion
+	styleClassCount
+)
+
+// Styles contains the complete per-color-tier palette. A session constructs it
+// once and passes it through Options; rendering only applies cached styles to
+// contiguous spans and never builds styles or searches strings per frame.
+type Styles struct {
+	spans       [styleClassCount]lipgloss.Style
+	spanPrefix  [styleClassCount]string
+	spanSuffix  [styleClassCount]string
+	header      lipgloss.Style
+	headerShock lipgloss.Style
+	footer      lipgloss.Style
+	footerShock lipgloss.Style
+}
+
+func NewStyles(renderer *lipgloss.Renderer, tier ColorTier) *Styles {
+	style := func() lipgloss.Style {
+		if renderer != nil {
+			return renderer.NewStyle()
+		}
+		return lipgloss.NewStyle()
+	}
+	styles := &Styles{}
+	styles.spans[styleRoad] = style().Foreground(tierColor(tier, "240", "#585858"))
+	styles.spans[styleHazardRed] = style().Bold(true).Foreground(tierColor(tier, "196", "#ff3030"))
+	styles.spans[styleOil] = style().Bold(true).Foreground(tierColor(tier, "214", "#ffaf00"))
+	styles.spans[styleBenefit] = style().Bold(true).Foreground(tierColor(tier, "48", "#00ff87"))
+	styles.spans[styleOtherPlayer] = style().Faint(true).Foreground(tierColor(tier, "44", "#00d7d7"))
+	styles.spans[styleCarWhite] = style().Bold(true).Foreground(tierColor(tier, "255", "#ffffff"))
+	styles.spans[styleCarYellow] = style().Bold(true).Foreground(tierColor(tier, "226", "#ffff00"))
+	styles.spans[styleCarRed] = style().Bold(true).Foreground(tierColor(tier, "196", "#ff0000"))
+	styles.spans[styleCarDarkRed] = style().Bold(true).Foreground(tierColor(tier, "88", "#870000"))
+	styles.spans[styleExplosion] = styles.spans[styleHazardRed]
+	styles.header = style().Bold(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
+	styles.headerShock = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "252", "#e8e8e8"))
+	styles.footer = style().Foreground(tierColor(tier, "203", "#ff5f5f"))
+	styles.footerShock = style().Bold(true).Reverse(true).Foreground(tierColor(tier, "203", "#ff5f5f"))
+	for class := styleRoad; class < styleClassCount; class++ {
+		styles.spanPrefix[class], styles.spanSuffix[class] = compiledStyle(styles.spans[class])
+	}
+	return styles
+}
+
+func compiledStyle(style lipgloss.Style) (string, string) {
+	const marker = "§"
+	rendered := style.Render(marker)
+	index := strings.Index(rendered, marker)
+	if index < 0 {
+		return "", ""
+	}
+	return rendered[:index], rendered[index+len(marker):]
+}
+
+type styledCell struct {
+	rune  rune
+	style styleClass
 }
 
 func Wall(boards score.Boards, width, height int, death bool) string {
@@ -171,16 +244,16 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		displaySpeed, self.Distance,
 		DamageBar(self.Damage), self.Damage, game.SurvivalStatus(self.Damage), len(snapshot.Players)), opts.Width)
 
-	canvas := make([][]rune, height)
+	canvas := make([][]styledCell, height)
 	for y := range canvas {
-		canvas[y] = make([]rune, insideWidth)
+		canvas[y] = make([]styledCell, insideWidth)
 		for x := range canvas[y] {
-			canvas[y][x] = ' '
+			canvas[y][x] = styledCell{rune: ' ', style: styleRoad}
 		}
 		for lane := 1; lane < game.LaneCount; lane++ {
 			x := lane * laneWidth
 			if (y+int(snapshot.Distance/3))%2 == 0 && x < insideWidth {
-				canvas[y][x] = '·'
+				canvas[y][x].rune = '·'
 			}
 		}
 	}
@@ -211,29 +284,30 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 		}
 		x := hazard.Lane*laneWidth + laneWidth/2
 		glyph := hazardGlyph(hazard.Kind, hazard.Warning)
-		put(canvas[row], x-len([]rune(glyph))/2, glyph)
+		hazardStyle := styleForHazard(hazard.Kind, hazard.Warning)
+		putStyled(canvas[row], x-len([]rune(glyph))/2, glyph, hazardStyle)
 		if hazard.Kind == "traffic" && hazard.Warning {
 			for y := row + 1; y <= min(height-1, row+2); y++ {
-				put(canvas[y], x-1, "!!!")
+				putStyled(canvas[y], x-1, "!!!", styleHazardRed)
 			}
 		}
 		if hazard.Kind == "slipstream" || hazard.Kind == "oil" {
 			for y := max(0, row-lengthRows); y < row; y++ {
-				put(canvas[y], x-1, glyph)
+				putStyled(canvas[y], x-1, glyph, hazardStyle)
 			}
 		}
 		if hazard.Kind == "gap" {
 			for y := max(0, row-lengthRows); y <= row; y++ {
 				for laneX := hazard.Lane * laneWidth; laneX < (hazard.Lane+1)*laneWidth && laneX < len(canvas[y]); laneX++ {
-					canvas[y][laneX] = ' '
+					canvas[y][laneX] = styledCell{rune: ' ', style: styleRoad}
 				}
 			}
 		}
 	}
 	for y := range fogRows {
 		for x := range canvas[y] {
-			if canvas[y][x] == ' ' || canvas[y][x] == '·' {
-				canvas[y][x] = []rune("░▒▓")[(x+y)%3]
+			if canvas[y][x].rune == ' ' || canvas[y][x].rune == '·' {
+				canvas[y][x].rune = []rune("░▒▓")[(x+y)%3]
 			}
 		}
 	}
@@ -258,7 +332,7 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 				hasSelf = true
 			}
 			if player.State == game.Exploding {
-				put(canvas[pos.row], x-3, "*BOOM*")
+				putStyled(canvas[pos.row], x-3, "*BOOM*", styleExplosion)
 			}
 		}
 		if len(players) > 1 {
@@ -266,32 +340,41 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 			if hasSelf {
 				badgeX = x + 3
 			}
-			put(canvas[pos.row], badgeX, fmt.Sprintf("[%d]", len(players)))
+			putStyled(canvas[pos.row], badgeX, fmt.Sprintf("[%d]", len(players)), styleOtherPlayer)
 		}
 		for _, player := range players {
 			if player.ID == selfID {
 				if player.State == game.Exploding {
 					break
 				}
-				put(canvas[pos.row], x-2, "▄██▄")
+				carStyle := styleForDamage(player.Damage)
+				putStyled(canvas[pos.row], x-2, "▄██▄", carStyle)
 				if pos.row+1 < height {
-					put(canvas[pos.row+1], x-2, "▀██▀")
+					putStyled(canvas[pos.row+1], x-2, "▀██▀", carStyle)
 				}
 				break
 			}
 		}
 		if len(players) == 1 && players[0].ID != selfID && players[0].State != game.Exploding {
-			put(canvas[pos.row], x-1, "◇")
-			put(canvas[pos.row], x+1, " "+players[0].Name)
+			putStyled(canvas[pos.row], x-1, "◇", styleOtherPlayer)
+			putStyled(canvas[pos.row], x+1, " "+players[0].Name, styleOtherPlayer)
 		}
 	}
 
 	if snapshot.Shock && snapshot.Tick%2 == 0 {
 		leftPad++
 	}
+	styles := opts.Styles
+	if styles == nil {
+		styles = NewStyles(opts.Renderer, opts.Tier)
+	}
 	rows := make([]string, 0, height)
 	for _, row := range canvas {
-		rows = append(rows, strings.Repeat(" ", leftPad)+"║"+string(row)+"║")
+		if opts.Mono || opts.Tier == Mono {
+			rows = append(rows, strings.Repeat(" ", leftPad)+"║"+plainRow(row)+"║")
+		} else {
+			rows = append(rows, strings.Repeat(" ", leftPad)+styles.spans[styleRoad].Render("║")+renderStyledRow(row, styles)+styles.spans[styleRoad].Render("║"))
+		}
 	}
 	flash := self.Flash
 	if snapshot.ShockWarning {
@@ -307,10 +390,16 @@ func Race(snapshot game.Snapshot, selfID string, opts Options) string {
 	}
 	if !opts.Mono && opts.Tier != Mono {
 		shockFlash := snapshot.Shock && snapshot.Tick%10 == 0
-		header = newStyle(opts).Bold(true).Reverse(shockFlash).Foreground(tierColor(opts.Tier, "252", "#e8e8e8")).Render(header)
-		footer = newStyle(opts).Bold(snapshot.Shock || snapshot.ShockWarning).Reverse(shockFlash).Foreground(tierColor(opts.Tier, "203", "#ff5f5f")).Render(footer)
-		for i, row := range rows {
-			rows[i] = colorizeRoad(row, opts, self.Damage)
+		if shockFlash {
+			header = styles.headerShock.Render(header)
+			footer = styles.footerShock.Render(footer)
+		} else {
+			header = styles.header.Render(header)
+			if snapshot.Shock || snapshot.ShockWarning {
+				footer = styles.footerShock.Render(footer)
+			} else {
+				footer = styles.footer.Render(footer)
+			}
 		}
 	}
 	return header + "\n" + strings.Join(rows, "\n") + "\n" + footer
@@ -323,39 +412,69 @@ func tierColor(tier ColorTier, ansi256, truecolor string) lipgloss.Color {
 	return lipgloss.Color(ansi256)
 }
 
-func newStyle(opts Options) lipgloss.Style {
-	if opts.Renderer != nil {
-		return opts.Renderer.NewStyle()
+func styleForHazard(kind string, warning bool) styleClass {
+	if warning || kind == "traffic" || kind == "shock" {
+		return styleHazardRed
 	}
-	return lipgloss.NewStyle()
+	switch kind {
+	case "oil":
+		return styleOil
+	case "slipstream", "repair":
+		return styleBenefit
+	default:
+		return styleRoad
+	}
 }
 
-func colorizeRoad(row string, opts Options, damage int) string {
-	tier := opts.Tier
-	row = newStyle(opts).Foreground(tierColor(tier, "240", "#585858")).Render(row)
-	hazards := map[string]lipgloss.Color{
-		"!!!": tierColor(tier, "196", "#ff3030"),
-		"≈≈≈": tierColor(tier, "214", "#ffaf00"),
-		"[+]": tierColor(tier, "48", "#00ff87"),
-		"^^^": tierColor(tier, "48", "#00ff87"),
-		"▼▼":  tierColor(tier, "196", "#ff3030"),
+func styleForDamage(damage int) styleClass {
+	switch {
+	case damage >= 75:
+		return styleCarDarkRed
+	case damage >= 50:
+		return styleCarRed
+	case damage >= 25:
+		return styleCarYellow
+	default:
+		return styleCarWhite
 	}
-	for glyph, color := range hazards {
-		row = strings.ReplaceAll(row, glyph, newStyle(opts).Bold(true).Foreground(color).Render(glyph))
+}
+
+func plainRow(row []styledCell) string {
+	runes := make([]rune, len(row))
+	for i, cell := range row {
+		runes[i] = cell.rune
 	}
-	row = strings.ReplaceAll(row, "◇", newStyle(opts).Faint(true).Foreground(tierColor(tier, "44", "#00d7d7")).Render("◇"))
-	carColor := tierColor(tier, "255", "#ffffff")
-	if damage >= 75 {
-		carColor = tierColor(tier, "88", "#870000")
-	} else if damage >= 50 {
-		carColor = tierColor(tier, "196", "#ff0000")
-	} else if damage >= 25 {
-		carColor = tierColor(tier, "226", "#ffff00")
+	return string(runes)
+}
+
+func renderStyledRow(row []styledCell, styles *Styles) string {
+	if len(row) == 0 {
+		return ""
 	}
-	for _, glyph := range []string{"▄██▄", "▀██▀"} {
-		row = strings.ReplaceAll(row, glyph, newStyle(opts).Bold(true).Foreground(carColor).Render(glyph))
+	var out strings.Builder
+	start := 0
+	for start < len(row) {
+		class := row[start].style
+		end := start + 1
+		for end < len(row) && row[end].style == class {
+			end++
+		}
+		out.WriteString(styles.spanPrefix[class])
+		for i := start; i < end; i++ {
+			out.WriteRune(row[i].rune)
+		}
+		out.WriteString(styles.spanSuffix[class])
+		start = end
 	}
-	return row
+	return out.String()
+}
+
+func putStyled(row []styledCell, start int, text string, class styleClass) {
+	for i, r := range []rune(text) {
+		if start+i >= 0 && start+i < len(row) {
+			row[start+i] = styledCell{rune: r, style: class}
+		}
+	}
 }
 
 func hazardGlyph(kind string, warning bool) string {

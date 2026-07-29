@@ -21,3 +21,8 @@ This file records choices made where `PLAN.md` deliberately leaves details open.
 - Rooms publish one immutable, shared world snapshot per tick, but each session composes its own terminal-sized road canvas. This differs from the plan's proposed precomposed per-room canvas and keeps resize, color-tier, mono, and local-player overlays simple; it spends more CPU per player and is the first optimization target if profiling shows rendering pressure.
 - The scoreboard store retains the required all-time top 50 and today's top 10. At 80×24 the wall renders today's top 10 first and then as many all-time rows as fit; larger terminals show more. Showing all 60 records simultaneously would violate the 80×24 target, so paging/scrolling is left as a known presentation limitation.
 - Development landed as one integrated, verified commit rather than five milestone commits. Milestone behavior is separated by packages and tests, but the Git history does not pretend that retrospective empty or non-buildable milestone commits were made.
+
+## Review fixes
+
+- B1+A3: the renderer now carries a style class beside every canvas rune and emits contiguous ANSI spans using a palette built once per SSH session. Cached ANSI prefixes/suffixes avoid per-frame Lipgloss style construction and glyph-search `ReplaceAll` passes while explicitly reopening road gray after every colored span.
+- B1+A3 benchmark on Apple M2 (`go test ./internal/render -run '^$' -bench 'Benchmark(Legacy|Span)ColorizeRoad' -benchmem -count=5`): legacy median 28,352 ns/op, 4,771 B/op, 237 allocs/op; span median 385.7 ns/op, 1,008 B/op, 6 allocs/op. The benchmark keeps the former implementation in test-only code for a reproducible like-for-like comparison.
