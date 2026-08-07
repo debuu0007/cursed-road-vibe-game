@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { PHYS_MAT } from '../physics.js';
 
-/** Procedural placeholder mesh (until GLB swap). */
+/** Immediate fallback visual; a configured GLB replaces its children after loading. */
 export function makeCarMesh(config) {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshLambertMaterial({

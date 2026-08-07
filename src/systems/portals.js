@@ -73,7 +73,7 @@ export function parsePortalParams() {
 }
 
 /** @returns {THREE.Group} */
-function makeCanvasLabel(text, fg, px = 26) {
+function makeCanvasLabel(text, fg) {
   const canvas = document.createElement('canvas');
   canvas.width = 768;
   canvas.height = 128;
@@ -82,7 +82,7 @@ function makeCanvasLabel(text, fg, px = 26) {
     c2d.fillStyle = 'rgba(0,0,0,0.72)';
     c2d.fillRect(24, 24, canvas.width - 48, canvas.height - 48);
     c2d.fillStyle = fg;
-    c2d.font = `bold ${px}px ui-monospace, Menlo, monospace`;
+    c2d.font = 'bold 26px ui-monospace, Menlo, monospace';
     c2d.textAlign = 'center';
     c2d.textBaseline = 'middle';
     c2d.fillText(text, canvas.width / 2, canvas.height / 2);

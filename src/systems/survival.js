@@ -40,7 +40,7 @@ export function recordImpact(runData, amount, speedKmh = 0) {
   return runData;
 }
 
-export function calculateSurvival(runData, goalDistance = 800, carDamage = runData.cabinDamage) {
+export function calculateSurvival(runData, goalDistance, carDamage) {
   const impactForces = Array.isArray(runData.impactForces) ? runData.impactForces : [];
   const landingAngles = Array.isArray(runData.landingAngles) ? runData.landingAngles : [];
   const rolloverCount = Math.max(0, Number(runData.rolloverCount) || 0);

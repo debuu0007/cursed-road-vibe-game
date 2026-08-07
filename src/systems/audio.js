@@ -8,6 +8,7 @@ const sfx = {};
 let engineLoop = null;
 let backgroundMusic = null;
 let audioBooted = false;
+const reportedFailures = new Set();
 
 const URLS = {
   engine: '/assets/audio/engine.ogg',
@@ -19,6 +20,12 @@ const URLS = {
   lose: '/assets/audio/lose.ogg'
 };
 
+function reportAudioFailure(operation, error) {
+  if (reportedFailures.has(operation)) return;
+  reportedFailures.add(operation);
+  console.warn(`[audio] ${operation} failed; continuing without it.`, error);
+}
+
 /** Load Howl instances (non-blocking). */
 function bootHowls() {
   if (audioBooted) return;
@@ -29,8 +36,9 @@ function bootHowls() {
     loop: true,
     volume: 0.22,
     html5: true,
-    onloaderror() {
+    onloaderror(_soundId, error) {
       engineLoop = null;
+      reportAudioFailure('engine load', error);
     }
   });
 
@@ -39,8 +47,9 @@ function bootHowls() {
     loop: true,
     volume: 0.32,
     html5: true,
-    onloaderror() {
+    onloaderror(_soundId, error) {
       backgroundMusic = null;
+      reportAudioFailure('background music load', error);
     }
   });
 
@@ -49,8 +58,9 @@ function bootHowls() {
       src: [URLS[key]],
       volume: key === 'crash' ? 0.45 : 0.38,
       html5: true,
-      onloaderror() {
+      onloaderror(_soundId, error) {
         sfx[key] = null;
+        reportAudioFailure(`${key} sound load`, error);
       }
     });
   }
@@ -66,7 +76,7 @@ export function unlockAudioPlayback() {
   bootHowls();
   const ctx = Howler.ctx;
   if (ctx && ctx.state === 'suspended') {
-    ctx.resume().catch(() => {});
+    ctx.resume().catch((error) => reportAudioFailure('playback unlock', error));
   }
 }
 
@@ -80,8 +90,8 @@ export function updateEngineAudio(speedKmh, phase) {
     const rate = clamp(0.38 + curve * 2.05, 0.42, 2.45);
     engineLoop.rate(rate);
     if (!engineLoop.playing()) engineLoop.play();
-  } catch {
-    // Howl not ready
+  } catch (error) {
+    reportAudioFailure('engine playback', error);
   }
 }
 
@@ -89,16 +99,16 @@ export function stopEngineForMenu() {
   try {
     if (engineLoop && engineLoop.playing()) engineLoop.stop();
     if (backgroundMusic && backgroundMusic.playing()) backgroundMusic.stop();
-  } catch {
-    // ignore
+  } catch (error) {
+    reportAudioFailure('audio stop', error);
   }
 }
 
 export function startBackgroundMusic() {
   try {
     if (backgroundMusic && !backgroundMusic.playing()) backgroundMusic.play();
-  } catch {
-    // ignore
+  } catch (error) {
+    reportAudioFailure('background music playback', error);
   }
 }
 
@@ -108,7 +118,7 @@ export function playSfx(name) {
   const h = sfx[name];
   try {
     if (h && h.state() === 'loaded') h.play();
-  } catch {
-    // ignore
+  } catch (error) {
+    reportAudioFailure(`${name} sound playback`, error);
   }
 }
